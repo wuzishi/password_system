@@ -21,32 +21,26 @@ from app.core.security import Role, SecurityLevel, has_permission
 router = APIRouter(prefix="/api/passwords", tags=["密码管理"])
 
 
-def _can_access(user: User, entry: PasswordEntry, db: Session) -> bool:
-    """Check if user can see this entry in the list (not decrypt)."""
+def _can_see(user: User, entry: PasswordEntry, db: Session) -> bool:
+    """Check if user can see this entry in the list (all users except personal)."""
     level = entry.security_level or "low"
-
-    # Personal: only creator, nobody else including admin
     if level == "personal":
         return entry.created_by == user.id
+    return True
 
-    # Creator always has access
+
+def _has_operate_permission(user: User, entry: PasswordEntry, db: Session) -> bool:
+    """Check if user has been granted access (creator/admin/team member/shared)."""
     if entry.created_by == user.id:
         return True
-
-    # Admin has access to all non-personal entries
     if user.role == Role.ADMIN:
         return True
-
-    # High: team members can see it in list (but decrypt requires approval)
-    # Medium: team members + shared users
-    # Low: team members + shared users
     if entry.team_id:
         is_member = db.query(TeamMember).filter(
             TeamMember.team_id == entry.team_id, TeamMember.user_id == user.id
         ).first()
         if is_member:
             return True
-
     shared = db.query(PasswordShare).filter(
         PasswordShare.password_entry_id == entry.id,
         PasswordShare.shared_with_user_id == user.id,
@@ -68,10 +62,12 @@ def _can_decrypt(user: User, entry: PasswordEntry, db: Session) -> tuple[bool, s
     if entry.created_by == user.id:
         return True, ""
 
+    # Admin always ok (except personal)
+    if user.role == Role.ADMIN:
+        return True, ""
+
     # High: needs approved & unexpired approval
     if level == "high":
-        if user.role == Role.ADMIN:
-            return True, ""
         now = datetime.now(timezone.utc)
         approval = db.query(ApprovalRequest).filter(
             ApprovalRequest.requester_id == user.id,
@@ -82,14 +78,12 @@ def _can_decrypt(user: User, entry: PasswordEntry, db: Session) -> tuple[bool, s
         ).first()
         if approval:
             return True, ""
-        return False, "高安全密码需要Admin审批后才能查看"
+        return False, "需要审批才能查看"
 
-    # Medium/Low: standard access check
-    if user.role == Role.ADMIN:
+    # Medium/Low: must have been granted access (team member or shared)
+    if _has_operate_permission(user, entry, db):
         return True, ""
-    if not _can_access(user, entry, db):
-        return False, "无权访问"
-    return True, ""
+    return False, "需要申请权限才能操作"
 
 
 def _calc_expire_status(entry: PasswordEntry) -> tuple[str, int | None]:
@@ -113,7 +107,7 @@ def _calc_expire_status(entry: PasswordEntry) -> tuple[str, int | None]:
         return "normal", remaining
 
 
-def _to_response(entry: PasswordEntry, db: Session) -> dict:
+def _to_response(entry: PasswordEntry, db: Session, current_user: User = None) -> dict:
     team_name = entry.team.name if entry.team else None
     creator_name = entry.creator.username if entry.creator else None
     expire_status, expire_remaining = _calc_expire_status(entry)
@@ -143,6 +137,7 @@ def _to_response(entry: PasswordEntry, db: Session) -> dict:
         "last_verified_at": entry.last_verified_at,
         "created_at": entry.created_at,
         "updated_at": entry.updated_at,
+        "has_permission": _has_operate_permission(current_user, entry, db) if current_user else False,
     }
 
 
@@ -168,7 +163,7 @@ def list_passwords(
             PasswordEntry.title.contains(keyword) | PasswordEntry.username.contains(keyword) | PasswordEntry.url.contains(keyword) | PasswordEntry.host.contains(keyword)
         )
     entries = query.order_by(PasswordEntry.updated_at.desc()).all()
-    results = [_to_response(e, db) for e in entries if _can_access(current_user, e, db)]
+    results = [_to_response(e, db, current_user) for e in entries if _can_see(current_user, e, db)]
     if expire_status:
         results = [r for r in results if r["expire_status"] == expire_status]
     return results
@@ -183,9 +178,9 @@ def list_expiring_passwords(
     entries = db.query(PasswordEntry).filter(PasswordEntry.expire_days > 0).all()
     results = []
     for e in entries:
-        if not _can_access(current_user, e, db):
+        if not _can_see(current_user, e, db):
             continue
-        resp = _to_response(e, db)
+        resp = _to_response(e, db, current_user)
         if resp["expire_status"] in ("expired", "warning"):
             results.append(resp)
     results.sort(key=lambda r: r["expire_remaining_days"] or -9999)
@@ -244,7 +239,7 @@ def create_password(
     db.refresh(entry)
     log_action(db, current_user.id, "password.create", "password", entry.id,
                f"创建{CATEGORY_LABELS.get(req.category, '')}密码 {entry.title}")
-    return _to_response(entry, db)
+    return _to_response(entry, db, current_user)
 
 
 @router.post("/{password_id}/decrypt", response_model=PasswordDecryptResponse)
@@ -360,7 +355,7 @@ def update_password(
     db.refresh(entry)
     log_action(db, current_user.id, "password.update", "password", entry.id,
                f"更新密码 {entry.title}")
-    return _to_response(entry, db)
+    return _to_response(entry, db, current_user)
 
 
 @router.delete("/{password_id}")
@@ -397,8 +392,8 @@ def verify_server_password(
         raise HTTPException(status_code=404, detail="密码不存在")
     if entry.category != "server":
         raise HTTPException(status_code=400, detail="仅支持服务器类型密码")
-    if not _can_access(current_user, entry, db):
-        raise HTTPException(status_code=403, detail="无权访问")
+    if not _has_operate_permission(current_user, entry, db):
+        raise HTTPException(status_code=403, detail="无操作权限，请申请授权")
     if not entry.host:
         raise HTTPException(status_code=400, detail="未配置主机地址")
 
@@ -506,8 +501,8 @@ def list_shares(
     entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="密码不存在")
-    if not _can_access(current_user, entry, db):
-        raise HTTPException(status_code=403, detail="无权访问")
+    if not _has_operate_permission(current_user, entry, db):
+        raise HTTPException(status_code=403, detail="无操作权限")
     shares = db.query(PasswordShare).filter(PasswordShare.password_entry_id == password_id).all()
     result = []
     for s in shares:

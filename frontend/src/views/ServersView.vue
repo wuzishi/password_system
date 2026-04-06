@@ -32,11 +32,18 @@
           <el-tag v-else type="info" size="small" effect="plain">未检测</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="操作" width="140" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
-          <el-button type="primary" size="small" @click="openTerminal(row)">
-            <el-icon style="margin-right: 4px"><Monitor /></el-icon>终端
-          </el-button>
+          <template v-if="row.has_permission">
+            <el-button type="primary" size="small" @click="openTerminal(row)">
+              <el-icon style="margin-right: 4px"><Monitor /></el-icon>终端
+            </el-button>
+          </template>
+          <template v-else>
+            <el-button size="small" @click="requestServerAccess(row)">
+              <el-icon style="margin-right: 4px"><Lock /></el-icon>申请权限
+            </el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -49,6 +56,8 @@
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { getPasswords } from '../api/passwords'
+import { createApproval } from '../api/approvals'
+import { ElMessage } from 'element-plus'
 
 const router = useRouter()
 const servers = ref([])
@@ -56,6 +65,13 @@ const loading = ref(false)
 
 function openTerminal(row) {
   router.push(`/terminal/${row.id}`)
+}
+
+async function requestServerAccess(row) {
+  try {
+    await createApproval({ password_entry_id: row.id, request_type: 'view', reason: '申请服务器访问权限' })
+    ElMessage.success('权限申请已提交，等待管理员审批')
+  } catch {}
 }
 
 onMounted(async () => {

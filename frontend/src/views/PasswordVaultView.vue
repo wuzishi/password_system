@@ -66,15 +66,21 @@
         </template>
       </el-table-column>
       <el-table-column prop="username" label="用户名" min-width="110" />
-      <el-table-column label="密码" width="200">
+      <el-table-column label="密码" width="240">
         <template #default="{ row }">
-          <div style="display: flex; align-items: center; gap: 6px">
+          <div v-if="row.has_permission" style="display: flex; align-items: center; gap: 6px">
             <span>{{ revealedMap[row.id] || '••••••••' }}</span>
             <el-button link type="primary" size="small" @click="toggleReveal(row)">
               {{ revealedMap[row.id] ? '隐藏' : '查看' }}
             </el-button>
             <el-button link size="small" @click="copyPassword(row)">
               <el-icon><CopyDocument /></el-icon>
+            </el-button>
+          </div>
+          <div v-else style="display: flex; align-items: center; gap: 6px">
+            <span style="color: var(--text-tertiary)">••••••••</span>
+            <el-button link size="small" style="color: var(--yellow)" @click="requestAccess(row)">
+              <el-icon><Lock /></el-icon> 申请权限
             </el-button>
           </div>
         </template>
@@ -121,15 +127,22 @@
       <el-table-column prop="creator_name" label="创建人" width="90" />
       <el-table-column label="操作" width="310" fixed="right">
         <template #default="{ row }">
-          <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-          <el-button v-if="row.category === 'server'" link size="small" style="color: #e6a23c" @click="openChangePwd(row)">改密</el-button>
-          <el-button v-if="row.category === 'server'" link type="success" size="small" :loading="verifyingMap[row.id]" @click="handleVerify(row)">验证</el-button>
-          <el-button link type="warning" size="small" @click="openShare(row)" v-if="canShare">分享</el-button>
-          <el-popconfirm title="确认删除？" @confirm="handleDelete(row.id)">
-            <template #reference>
-              <el-button link type="danger" size="small">删除</el-button>
-            </template>
-          </el-popconfirm>
+          <template v-if="row.has_permission">
+            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+            <el-button v-if="row.category === 'server'" link size="small" style="color: var(--yellow)" @click="openChangePwd(row)">改密</el-button>
+            <el-button v-if="row.category === 'server'" link type="success" size="small" :loading="verifyingMap[row.id]" @click="handleVerify(row)">验证</el-button>
+            <el-button link type="warning" size="small" @click="openShare(row)" v-if="canShare">授权</el-button>
+            <el-popconfirm title="确认删除？" @confirm="handleDelete(row.id)">
+              <template #reference>
+                <el-button link type="danger" size="small">删除</el-button>
+              </template>
+            </el-popconfirm>
+          </template>
+          <template v-else>
+            <el-button link size="small" style="color: var(--yellow)" @click="requestAccess(row)">
+              <el-icon><Lock /></el-icon> 申请权限
+            </el-button>
+          </template>
         </template>
       </el-table-column>
     </el-table>
@@ -609,6 +622,16 @@ async function handleDelete(id) {
   await deletePassword(id)
   ElMessage.success('已删除')
   loadList()
+}
+
+async function requestAccess(row) {
+  try {
+    const reqType = row.security_level === 'high' ? 'view' : 'view'
+    await createApproval({ password_entry_id: row.id, request_type: reqType, reason: '申请访问权限' })
+    ElMessage.success('权限申请已提交，等待管理员审批')
+  } catch (err) {
+    // 已有 pending 或其他错误，interceptor 已处理
+  }
 }
 
 async function requireApproval(row, type) {

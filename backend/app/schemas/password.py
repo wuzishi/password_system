@@ -65,6 +65,7 @@ class PasswordResponse(BaseModel):
     last_verified_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+    has_permission: bool = False
 
     class Config:
         from_attributes = True
