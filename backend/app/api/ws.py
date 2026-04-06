@@ -623,11 +623,6 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
         channel = client.invoke_shell(term="xterm-256color", width=120, height=40)
         channel.settimeout(0.1)
 
-        # cwd 标记 nonce
-        cwd_nonce = secrets.token_hex(4)
-        cwd_marker_start = f"__CWD_{cwd_nonce}_"
-        cwd_marker_end = f"_CWDEND_{cwd_nonce}__"
-
         # 通知前端初始化完成
         await websocket.send_text(json.dumps({"init": True}))
 
@@ -649,71 +644,15 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
         reader_thread = threading.Thread(target=ssh_reader, daemon=True)
         reader_thread.start()
 
-        # 在后端 output 流中拦截 cwd marker，剥离后发 JSON
-        text_buf = ""
-
         async def send_output():
-            nonlocal text_buf
             while not stop_event.is_set():
                 try:
                     data = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                    await websocket.send_bytes(data)
                 except asyncio.TimeoutError:
                     continue
                 except Exception:
                     break
-
-                text = data.decode("utf-8", errors="replace")
-                text_buf += text
-
-                # 检查是否有完整的 marker
-                if cwd_marker_end in text_buf:
-                    # 提取 cwd
-                    try:
-                        start_idx = text_buf.index(cwd_marker_start)
-                        end_idx = text_buf.index(cwd_marker_end) + len(cwd_marker_end)
-                        cwd_raw = text_buf[start_idx + len(cwd_marker_start):end_idx - len(cwd_marker_end)]
-                        cwd = cwd_raw.strip()
-
-                        # 剥离整行 marker（含 echo 命令回显 + 输出行）
-                        # 找到 marker 所在行的起止
-                        before = text_buf[:start_idx]
-                        after = text_buf[end_idx:]
-                        # 往前找行首
-                        line_start = before.rfind("\n")
-                        clean_before = before[:line_start + 1] if line_start >= 0 else ""
-                        # 往后找行尾
-                        line_end = after.find("\n")
-                        clean_after = after[line_end + 1:] if line_end >= 0 else ""
-
-                        # 也剥离 echo 命令本身（上一行）
-                        # echo 行特征: 包含 cwd_marker_start
-                        lines = clean_before.split("\n")
-                        filtered_lines = [l for l in lines if cwd_marker_start not in l]
-                        clean_before = "\n".join(filtered_lines)
-
-                        clean = clean_before + clean_after
-                        text_buf = ""
-
-                        if clean:
-                            await websocket.send_bytes(clean.encode("utf-8"))
-
-                        if cwd:
-                            await websocket.send_text(json.dumps({"cwd": cwd}))
-                    except (ValueError, IndexError):
-                        # marker 解析失败，原样输出
-                        await websocket.send_bytes(text_buf.encode("utf-8"))
-                        text_buf = ""
-                elif cwd_marker_start[:8] in text_buf:
-                    # 可能有不完整的 marker，等下一个 chunk
-                    # 但只保留最后 200 字符等待，其余先输出
-                    safe_len = max(0, len(text_buf) - 200)
-                    if safe_len > 0:
-                        await websocket.send_bytes(text_buf[:safe_len].encode("utf-8"))
-                        text_buf = text_buf[safe_len:]
-                else:
-                    # 无 marker 嫌疑，全部输出
-                    await websocket.send_bytes(text_buf.encode("utf-8"))
-                    text_buf = ""
 
         send_task = asyncio.create_task(send_output())
 
@@ -734,12 +673,6 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
                             pass
                     else:
                         channel.send(text[:4096])
-                        # 回车后注入隐藏的 pwd 命令
-                        if "\r" in text or "\n" in text:
-                            pwd_cmd = f' printf "{cwd_marker_start}%s{cwd_marker_end}" "$(pwd)"\n'
-                            # 延迟让原命令先执行
-                            await asyncio.sleep(0.15)
-                            channel.send(pwd_cmd)
                 elif "bytes" in msg:
                     channel.send(msg["bytes"][:4096])
         except WebSocketDisconnect:
