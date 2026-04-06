@@ -623,19 +623,31 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
         channel = client.invoke_shell(term="xterm-256color", width=120, height=40)
         channel.settimeout(0.1)
 
-        # 获取 shell PID：发送 echo $$ 并从输出中解析
-        shell_pid = None
-        channel.send("echo $$\n")
+        # --- PID / cwd 辅助函数（闭包捕获 client, username）---
+        def _find_shell_pid_sync():
+            find_cmd = (
+                f"ps -u {username} -o pid=,tty=,comm= --sort=-start_time "
+                f"| grep -E 'pts/.*(-bash|bash|zsh|sh|fish)' | head -1 | awk '{{print $1}}'"
+            )
+            _, stdout, _ = client.exec_command(find_cmd, timeout=5)
+            return stdout.read().decode().strip()
+
+        async def _find_shell_pid():
+            try:
+                pid_out = await asyncio.get_event_loop().run_in_executor(None, _find_shell_pid_sync)
+                if pid_out.isdigit():
+                    return pid_out
+            except Exception:
+                pass
+            return None
+
+        def _read_cwd_sync(pid):
+            _, stdout, _ = client.exec_command(f"readlink /proc/{pid}/cwd", timeout=3)
+            return stdout.read().decode().strip()
+
+        # 等 shell 启动，获取 PID
         await asyncio.sleep(0.5)
-        pid_buf = b""
-        while channel.recv_ready():
-            pid_buf += channel.recv(4096)
-        # 从输出中提取纯数字行（就是 PID）
-        for line in pid_buf.decode("utf-8", errors="replace").split("\n"):
-            stripped = line.strip()
-            if stripped.isdigit():
-                shell_pid = stripped
-                break
+        shell_pid = await _find_shell_pid()
         logger.info(f"Terminal shell PID: {shell_pid}")
 
         # 通知前端初始化完成
@@ -673,21 +685,34 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
 
         # cwd 轮询：每 2 秒通过 procfs 读取 shell 进程的实际工作目录
         last_cwd = [None]
+        _pid = [shell_pid]
 
         async def cwd_poller():
-            if not shell_pid:
+            loop = asyncio.get_event_loop()
+            # 等待 shell 启动完成
+            await asyncio.sleep(1)
+            # 如果初始 PID 获取失败，重试几次
+            if not _pid[0]:
+                for i in range(5):
+                    _pid[0] = await _find_shell_pid()
+                    if _pid[0]:
+                        logger.info(f"Terminal shell PID (retry): {_pid[0]}")
+                        break
+                    await asyncio.sleep(1)
+            if not _pid[0]:
+                logger.warning("Cannot determine shell PID, cwd polling disabled")
                 return
+            logger.info(f"cwd_poller started for PID {_pid[0]}")
             while not stop_event.is_set():
                 await asyncio.sleep(2)
                 try:
-                    cmd = f"readlink /proc/{shell_pid}/cwd"
-                    _, stdout, _ = client.exec_command(cmd, timeout=3)
-                    cwd = stdout.read().decode().strip()
+                    cwd = await loop.run_in_executor(None, _read_cwd_sync, _pid[0])
                     if cwd and cwd != last_cwd[0]:
                         last_cwd[0] = cwd
+                        logger.info(f"cwd changed: {cwd}")
                         await websocket.send_text(json.dumps({"cwd": cwd}))
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"cwd poll error: {e}")
 
         cwd_task = asyncio.create_task(cwd_poller())
 
