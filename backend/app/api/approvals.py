@@ -50,11 +50,9 @@ def create_approval(
     if not entry:
         raise HTTPException(status_code=404, detail="密码条目不存在")
 
-    # Validate request makes sense for the security level
-    if req.request_type == "view" and entry.security_level != "high":
-        raise HTTPException(status_code=400, detail="仅高安全密码需要审批查看")
-    if req.request_type == "share" and entry.security_level != "medium":
-        raise HTTPException(status_code=400, detail="仅中安全密码需要审批分享")
+    # Personal passwords can't be shared
+    if entry.security_level == "personal":
+        raise HTTPException(status_code=400, detail="个人密码不支持申请")
     if req.request_type == "share" and not req.share_target_user_id:
         raise HTTPException(status_code=400, detail="分享审批需要指定目标用户")
 
@@ -130,12 +128,27 @@ def approve_request(
 
     entry = db.query(PasswordEntry).filter(PasswordEntry.id == approval.password_entry_id).first()
 
-    if approval.request_type == "view" and entry and entry.security_level == "high":
-        # High security: grant 5-minute access window
-        approval.expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
+    if approval.request_type == "view":
+        # Grant access: create PasswordShare for the requester
+        target_uid = approval.requester_id
+        existing_share = db.query(PasswordShare).filter(
+            PasswordShare.password_entry_id == approval.password_entry_id,
+            PasswordShare.shared_with_user_id == target_uid,
+        ).first()
+        if not existing_share:
+            share = PasswordShare(
+                password_entry_id=approval.password_entry_id,
+                shared_with_user_id=target_uid,
+                shared_by=current_user.id,
+                permission="view",
+            )
+            db.add(share)
+        # High security: also set 5-minute time window
+        if entry and entry.security_level == "high":
+            approval.expires_at = datetime.now(timezone.utc) + timedelta(minutes=5)
 
     if approval.request_type == "share" and approval.share_target_user_id:
-        # Medium security share: create PasswordShare record
+        # Share to another user
         existing_share = db.query(PasswordShare).filter(
             PasswordShare.password_entry_id == approval.password_entry_id,
             PasswordShare.shared_with_user_id == approval.share_target_user_id,
