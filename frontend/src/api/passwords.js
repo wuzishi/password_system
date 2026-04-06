@@ -10,3 +10,4 @@ export const sharePassword = (id, data) => api.post(`/passwords/${id}/share`, da
 export const getShares = (id) => api.get(`/passwords/${id}/shares`)
 export const revokeShare = (passwordId, shareId) => api.delete(`/passwords/${passwordId}/share/${shareId}`)
 export const verifyServerPassword = (id) => api.post(`/passwords/${id}/verify-server`)
+export const grantAccess = (id, data) => api.post(`/passwords/${id}/grant`, data)

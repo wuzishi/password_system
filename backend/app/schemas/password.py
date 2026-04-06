@@ -5,17 +5,21 @@ from datetime import datetime
 
 class PasswordCreate(BaseModel):
     title: str
-    category: str = "website"  # website / server
+    category: str = "website"  # website/server/database/api_key/other
     username: str = ""
     password: str
     notes: str = ""
     url: str = ""
     host: str = ""
     port: Optional[int] = None
+    db_type: str = ""
+    db_name: str = ""
+    api_provider: str = ""
+    api_endpoint: str = ""
     team_id: Optional[int] = None
     is_personal: bool = False
-    security_level: str = "low"  # personal/high/medium/low
-    expire_days: int = 0  # 0=never, 90=3 months
+    security_level: str = "low"
+    expire_days: int = 0
 
 
 class PasswordUpdate(BaseModel):
@@ -27,6 +31,10 @@ class PasswordUpdate(BaseModel):
     url: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
+    db_type: Optional[str] = None
+    db_name: Optional[str] = None
+    api_provider: Optional[str] = None
+    api_endpoint: Optional[str] = None
     expire_days: Optional[int] = None
     security_level: Optional[str] = None
 
@@ -40,6 +48,10 @@ class PasswordResponse(BaseModel):
     url: str
     host: str
     port: Optional[int] = None
+    db_type: str = ""
+    db_name: str = ""
+    api_provider: str = ""
+    api_endpoint: str = ""
     team_id: Optional[int] = None
     team_name: Optional[str] = None
     is_personal: bool
@@ -47,9 +59,9 @@ class PasswordResponse(BaseModel):
     creator_name: Optional[str] = None
     expire_days: int
     password_changed_at: Optional[datetime] = None
-    expire_status: str = "normal"  # normal / warning / expired
+    expire_status: str = "normal"
     expire_remaining_days: Optional[int] = None
-    verify_status: str = "unknown"  # unknown / valid / invalid / error
+    verify_status: str = "unknown"
     last_verified_at: Optional[datetime] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
@@ -72,12 +84,16 @@ class PasswordDecryptResponse(BaseModel):
     url: str
     host: str
     port: Optional[int] = None
+    db_type: str = ""
+    db_name: str = ""
+    api_provider: str = ""
+    api_endpoint: str = ""
     decrypt_token: Optional[str] = None
 
 
 class ShareCreate(BaseModel):
     shared_with_user_id: int
-    permission: str = "view"
+    permission: str = "view"  # view / edit
 
 
 class ShareResponse(BaseModel):
@@ -86,6 +102,7 @@ class ShareResponse(BaseModel):
     shared_with_user_id: int
     shared_with_username: str
     shared_by: int
+    shared_by_name: str = ""
     permission: str
     created_at: Optional[datetime] = None
 

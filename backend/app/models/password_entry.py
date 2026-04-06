@@ -9,20 +9,29 @@ class PasswordEntry(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(200), nullable=False)
-    category = Column(String(20), default="website")  # website / server
+    category = Column(String(20), default="website")  # website/server/database/api_key/other
     username = Column(String(200), default="")
     encrypted_password = Column(Text, nullable=False)
     encrypted_notes = Column(Text, default="")
+    # Website fields
     url = Column(String(500), default="")
-    host = Column(String(200), default="")       # server IP/hostname
-    port = Column(Integer, nullable=True)         # server port (e.g. 22)
+    # Server fields
+    host = Column(String(200), default="")
+    port = Column(Integer, nullable=True)
+    # Database fields
+    db_type = Column(String(50), default="")        # mysql/postgresql/mongodb/redis/...
+    db_name = Column(String(200), default="")       # database name
+    # API Key fields
+    api_provider = Column(String(100), default="")  # openai/anthropic/google/...
+    api_endpoint = Column(String(500), default="")  # endpoint URL
+    # Common
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    security_level = Column(String(20), default="low")  # personal/high/medium/low
+    security_level = Column(String(20), default="low")
     is_personal = Column(Boolean, default=False)
-    expire_days = Column(Integer, default=0)      # 0=never, 90=3 months
+    expire_days = Column(Integer, default=0)
     password_changed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
-    verify_status = Column(String(20), default="unknown")  # unknown / valid / invalid / error
+    verify_status = Column(String(20), default="unknown")
     last_verified_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     updated_at = Column(DateTime, default=lambda: datetime.now(timezone.utc), onupdate=lambda: datetime.now(timezone.utc))

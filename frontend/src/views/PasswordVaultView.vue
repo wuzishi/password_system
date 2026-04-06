@@ -18,8 +18,11 @@
         </el-form-item>
         <el-form-item label="分类">
           <el-select v-model="filterCategory" clearable placeholder="全部" @change="loadList">
-            <el-option label="网站密码" value="website" />
-            <el-option label="服务器密码" value="server" />
+            <el-option label="网站" value="website" />
+            <el-option label="服务器" value="server" />
+            <el-option label="数据库" value="database" />
+            <el-option label="API密钥" value="api_key" />
+            <el-option label="其他" value="other" />
           </el-select>
         </el-form-item>
         <el-form-item label="类型">
@@ -48,8 +51,8 @@
     <el-table :data="passwords" stripe v-loading="loading">
       <el-table-column label="分类" width="90">
         <template #default="{ row }">
-          <el-tag :type="row.category === 'server' ? 'danger' : ''" size="small" effect="plain">
-            {{ row.category === 'server' ? '服务器' : '网站' }}
+          <el-tag :type="CATEGORY_TAGS[row.category]?.type || 'info'" size="small" effect="plain">
+            {{ CATEGORY_TAGS[row.category]?.label || row.category }}
           </el-tag>
         </template>
       </el-table-column>
@@ -78,7 +81,8 @@
       </el-table-column>
       <el-table-column label="地址" min-width="150" show-overflow-tooltip>
         <template #default="{ row }">
-          <span v-if="row.category === 'server'">{{ row.host }}{{ row.port ? ':' + row.port : '' }}</span>
+          <span v-if="row.category === 'server' || row.category === 'database'">{{ row.host }}{{ row.port ? ':' + row.port : '' }}<span v-if="row.db_name" style="color: var(--text-tertiary)"> / {{ row.db_name }}</span></span>
+          <span v-else-if="row.category === 'api_key'">{{ row.api_provider }}{{ row.api_endpoint ? ' - ' + row.api_endpoint : '' }}</span>
           <span v-else>{{ row.url }}</span>
         </template>
       </el-table-column>
@@ -134,10 +138,13 @@
     <el-dialog v-model="dialogVisible" :title="editingId ? '编辑密码' : '新建密码'" width="560px" destroy-on-close>
       <el-form ref="formRef" :model="form" :rules="formRules" label-width="90px">
         <el-form-item label="分类" prop="category">
-          <el-radio-group v-model="form.category" :disabled="!!editingId">
-            <el-radio value="website">网站密码</el-radio>
-            <el-radio value="server">服务器密码</el-radio>
-          </el-radio-group>
+          <el-select v-model="form.category" :disabled="!!editingId" style="width: 100%">
+            <el-option value="website" label="网站密码" />
+            <el-option value="server" label="服务器密码" />
+            <el-option value="database" label="数据库密码" />
+            <el-option value="api_key" label="API 密钥" />
+            <el-option value="other" label="其他" />
+          </el-select>
         </el-form-item>
         <el-form-item label="安全等级" prop="security_level">
           <el-radio-group v-model="form.security_level" :disabled="!!editingId">
@@ -156,10 +163,10 @@
           </div>
         </el-form-item>
         <el-form-item label="标题" prop="title">
-          <el-input v-model="form.title" :placeholder="form.category === 'server' ? '如: 生产服务器-web01' : '如: GitHub'" />
+          <el-input v-model="form.title" :placeholder="categoryPlaceholders[form.category]?.title || ''" />
         </el-form-item>
-        <el-form-item label="用户名" prop="username">
-          <el-input v-model="form.username" :placeholder="form.category === 'server' ? 'root' : ''" />
+        <el-form-item :label="form.category === 'api_key' ? 'Key名称' : '用户名'" prop="username">
+          <el-input v-model="form.username" :placeholder="categoryPlaceholders[form.category]?.username || ''" />
         </el-form-item>
         <el-form-item label="密码" prop="password">
           <div style="display: flex; gap: 8px; width: 100%">
@@ -199,21 +206,64 @@
             </el-popover>
           </div>
         </el-form-item>
+        <!-- 网站 -->
+        <el-form-item v-if="form.category === 'website' || form.category === 'other'" label="网址">
+          <el-input v-model="form.url" placeholder="https://" />
+        </el-form-item>
+        <!-- 服务器 -->
         <template v-if="form.category === 'server'">
-          <el-form-item label="主机地址" prop="host">
-            <el-input v-model="form.host" placeholder="IP 或域名，如 192.168.1.100" />
+          <el-form-item label="主机地址">
+            <el-input v-model="form.host" placeholder="IP 或域名" />
           </el-form-item>
           <el-form-item label="端口">
-            <el-input-number v-model="form.port" :min="1" :max="65535" placeholder="22" />
+            <el-input-number v-model="form.port" :min="1" :max="65535" />
           </el-form-item>
           <el-form-item label="过期天数">
             <el-input-number v-model="form.expire_days" :min="0" :step="30" />
-            <span style="margin-left: 8px; color: #999; font-size: 12px">0=不过期，默认90天</span>
+            <span style="margin-left: 8px; color: var(--text-tertiary); font-size: 12px">0=不过期，默认90天</span>
           </el-form-item>
         </template>
-        <template v-else>
-          <el-form-item label="网址">
-            <el-input v-model="form.url" placeholder="https://" />
+        <!-- 数据库 -->
+        <template v-if="form.category === 'database'">
+          <el-form-item label="数据库类型">
+            <el-select v-model="form.db_type" placeholder="选择类型" style="width: 100%">
+              <el-option value="mysql" label="MySQL" />
+              <el-option value="postgresql" label="PostgreSQL" />
+              <el-option value="mongodb" label="MongoDB" />
+              <el-option value="redis" label="Redis" />
+              <el-option value="sqlserver" label="SQL Server" />
+              <el-option value="oracle" label="Oracle" />
+              <el-option value="sqlite" label="SQLite" />
+              <el-option value="other" label="其他" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="主机地址">
+            <el-input v-model="form.host" placeholder="IP 或域名" />
+          </el-form-item>
+          <el-form-item label="端口">
+            <el-input-number v-model="form.port" :min="1" :max="65535" />
+          </el-form-item>
+          <el-form-item label="数据库名">
+            <el-input v-model="form.db_name" placeholder="数据库名称" />
+          </el-form-item>
+        </template>
+        <!-- API Key -->
+        <template v-if="form.category === 'api_key'">
+          <el-form-item label="服务商">
+            <el-select v-model="form.api_provider" placeholder="选择或输入" filterable allow-create style="width: 100%">
+              <el-option value="openai" label="OpenAI" />
+              <el-option value="anthropic" label="Anthropic" />
+              <el-option value="google" label="Google AI" />
+              <el-option value="azure" label="Azure OpenAI" />
+              <el-option value="deepseek" label="DeepSeek" />
+              <el-option value="zhipu" label="智谱 AI" />
+              <el-option value="baidu" label="百度千帆" />
+              <el-option value="aliyun" label="阿里云" />
+              <el-option value="other" label="其他" />
+            </el-select>
+          </el-form-item>
+          <el-form-item label="接口地址">
+            <el-input v-model="form.api_endpoint" placeholder="https://api.openai.com/v1" />
           </el-form-item>
         </template>
         <el-form-item label="备注">
@@ -237,27 +287,41 @@
       </template>
     </el-dialog>
 
-    <!-- Share Dialog -->
-    <el-dialog v-model="shareVisible" title="分享密码" width="460px" destroy-on-close>
-      <el-form inline>
+    <!-- Share / Grant Dialog -->
+    <el-dialog v-model="shareVisible" :title="auth.isAdmin ? '授权管理' : '分享密码'" width="540px" destroy-on-close>
+      <el-form inline style="margin-bottom: 12px">
         <el-form-item label="用户">
-          <el-select v-model="shareUserId" filterable placeholder="选择用户">
+          <el-select v-model="shareUserId" filterable placeholder="选择用户" style="width: 160px">
             <el-option v-for="u in allUsers" :key="u.id" :label="u.username" :value="u.id" />
           </el-select>
         </el-form-item>
+        <el-form-item label="权限">
+          <el-select v-model="sharePermission" style="width: 100px">
+            <el-option value="view" label="只读" />
+            <el-option value="edit" label="读写" />
+          </el-select>
+        </el-form-item>
         <el-form-item>
-          <el-button type="primary" @click="handleShare">分享</el-button>
+          <el-button type="primary" @click="handleShare">{{ auth.isAdmin ? '授权' : '分享' }}</el-button>
         </el-form-item>
       </el-form>
-      <el-table :data="shares" size="small" style="margin-top: 10px">
-        <el-table-column prop="shared_with_username" label="用户" />
-        <el-table-column prop="permission" label="权限" width="80" />
+      <el-table :data="shares" size="small">
+        <el-table-column prop="shared_with_username" label="用户" min-width="100" />
+        <el-table-column label="权限" width="80">
+          <template #default="{ row }">
+            <el-tag :type="row.permission === 'edit' ? 'warning' : 'info'" size="small">
+              {{ row.permission === 'edit' ? '读写' : '只读' }}
+            </el-tag>
+          </template>
+        </el-table-column>
+        <el-table-column prop="shared_by_name" label="授权人" width="90" />
         <el-table-column label="操作" width="80">
           <template #default="{ row }">
             <el-button link type="danger" size="small" @click="handleRevokeShare(row)">撤销</el-button>
           </template>
         </el-table-column>
       </el-table>
+      <el-empty v-if="shares.length === 0" description="暂无授权记录" :image-size="48" />
     </el-dialog>
 
     <!-- Security Confirm Dialog -->
@@ -315,7 +379,7 @@
 import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useDecryptStore } from '../stores/decrypt'
-import { getPasswords, createPassword, updatePassword, deletePassword, decryptPassword, sharePassword, getShares, revokeShare, verifyServerPassword } from '../api/passwords'
+import { getPasswords, createPassword, updatePassword, deletePassword, decryptPassword, sharePassword, getShares, revokeShare, verifyServerPassword, grantAccess } from '../api/passwords'
 import { createApproval, checkAccess } from '../api/approvals'
 import { getTeams } from '../api/teams'
 import { getAllUsers } from '../api/users'
@@ -323,6 +387,23 @@ import { ElMessage } from 'element-plus'
 
 const auth = useAuthStore()
 const decryptStore = useDecryptStore()
+
+const CATEGORY_TAGS = {
+  website: { label: '网站', type: '' },
+  server: { label: '服务器', type: 'danger' },
+  database: { label: '数据库', type: 'warning' },
+  api_key: { label: 'API', type: 'primary' },
+  other: { label: '其他', type: 'info' },
+}
+
+const categoryPlaceholders = {
+  website: { title: '如: GitHub', username: '登录用户名' },
+  server: { title: '如: 生产服务器-web01', username: 'root' },
+  database: { title: '如: 生产数据库-主库', username: '数据库用户名' },
+  api_key: { title: '如: OpenAI GPT-4', username: 'API Key 名称' },
+  other: { title: '标题', username: '账号' },
+}
+
 const passwords = ref([])
 const teams = ref([])
 const allUsers = ref([])
@@ -345,6 +426,7 @@ const formRef = ref()
 const form = reactive({
   title: '', category: 'website', username: '', password: '',
   url: '', host: '', port: 22, notes: '',
+  db_type: '', db_name: '', api_provider: '', api_endpoint: '',
   is_personal: false, team_id: null, expire_days: 0, security_level: 'low',
 })
 const formRules = {
@@ -356,6 +438,7 @@ const formRules = {
 const shareVisible = ref(false)
 const sharePasswordId = ref(null)
 const shareUserId = ref(null)
+const sharePermission = ref('view')
 const shares = ref([])
 
 // Security confirm
@@ -427,6 +510,8 @@ function executePendingAction(data) {
       title: data.title, category: row.category || 'website',
       username: data.username, password: data.password,
       url: data.url, host: data.host || '', port: data.port || 22,
+      db_type: data.db_type || '', db_name: data.db_name || '',
+      api_provider: data.api_provider || '', api_endpoint: data.api_endpoint || '',
       notes: data.notes, is_personal: row.is_personal, team_id: row.team_id,
       expire_days: row.expire_days || 0, security_level: row.security_level || 'low',
     })
@@ -503,6 +588,8 @@ async function handleSave() {
       title: form.title, category: form.category,
       username: form.username, password: form.password,
       url: form.url, host: form.host, port: form.port,
+      db_type: form.db_type, db_name: form.db_name,
+      api_provider: form.api_provider, api_endpoint: form.api_endpoint,
       notes: form.notes, expire_days: form.expire_days,
     }
     if (editingId.value) {
@@ -761,11 +848,17 @@ async function openShare(row) {
 
 async function handleShare() {
   if (!shareUserId.value) return
-  await sharePassword(sharePasswordId.value, { shared_with_user_id: shareUserId.value })
-  ElMessage.success('分享成功')
+  const payload = { shared_with_user_id: shareUserId.value, permission: sharePermission.value }
+  if (auth.isAdmin) {
+    await grantAccess(sharePasswordId.value, payload)
+  } else {
+    await sharePassword(sharePasswordId.value, payload)
+  }
+  ElMessage.success('授权成功')
   const { data } = await getShares(sharePasswordId.value)
   shares.value = data
   shareUserId.value = null
+  sharePermission.value = 'view'
 }
 
 async function handleRevokeShare(row) {

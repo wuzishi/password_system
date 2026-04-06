@@ -15,7 +15,7 @@ from app.services.crypto_service import encrypt, decrypt, migrate_if_needed
 from app.services.auth_service import verify_password, create_decrypt_token, verify_decrypt_token
 from app.models.approval import ApprovalRequest
 from app.services.audit_service import log_action
-from app.api.deps import get_current_user
+from app.api.deps import get_current_user, require_role
 from app.core.security import Role, SecurityLevel, has_permission
 
 router = APIRouter(prefix="/api/passwords", tags=["密码管理"])
@@ -126,6 +126,10 @@ def _to_response(entry: PasswordEntry, db: Session) -> dict:
         "url": entry.url,
         "host": entry.host or "",
         "port": entry.port,
+        "db_type": entry.db_type or "",
+        "db_name": entry.db_name or "",
+        "api_provider": entry.api_provider or "",
+        "api_endpoint": entry.api_endpoint or "",
         "team_id": entry.team_id,
         "team_name": team_name,
         "is_personal": entry.is_personal,
@@ -214,6 +218,7 @@ def create_password(
     sl = req.security_level
     if sl == "personal":
         req.is_personal = True
+    CATEGORY_LABELS = {"website": "网站", "server": "服务器", "database": "数据库", "api_key": "API密钥", "other": "其他"}
     entry = PasswordEntry(
         title=req.title,
         category=req.category,
@@ -224,6 +229,10 @@ def create_password(
         url=req.url,
         host=req.host,
         port=req.port,
+        db_type=req.db_type,
+        db_name=req.db_name,
+        api_provider=req.api_provider,
+        api_endpoint=req.api_endpoint,
         team_id=req.team_id if not req.is_personal else None,
         created_by=current_user.id,
         is_personal=req.is_personal,
@@ -234,7 +243,7 @@ def create_password(
     db.commit()
     db.refresh(entry)
     log_action(db, current_user.id, "password.create", "password", entry.id,
-               f"创建{'服务器' if req.category == 'server' else '网站'}密码 {entry.title}")
+               f"创建{CATEGORY_LABELS.get(req.category, '')}密码 {entry.title}")
     return _to_response(entry, db)
 
 
@@ -293,6 +302,10 @@ def decrypt_password(
         url=entry.url,
         host=entry.host or "",
         port=entry.port,
+        db_type=entry.db_type or "",
+        db_name=entry.db_name or "",
+        api_provider=entry.api_provider or "",
+        api_endpoint=entry.api_endpoint or "",
         decrypt_token=new_token,
     )
 
@@ -330,6 +343,14 @@ def update_password(
         entry.host = req.host
     if req.port is not None:
         entry.port = req.port
+    if req.db_type is not None:
+        entry.db_type = req.db_type
+    if req.db_name is not None:
+        entry.db_name = req.db_name
+    if req.api_provider is not None:
+        entry.api_provider = req.api_provider
+    if req.api_endpoint is not None:
+        entry.api_endpoint = req.api_endpoint
     if req.expire_days is not None:
         entry.expire_days = req.expire_days
     if req.security_level is not None:
@@ -491,12 +512,14 @@ def list_shares(
     result = []
     for s in shares:
         target = db.query(User).filter(User.id == s.shared_with_user_id).first()
+        sharer = db.query(User).filter(User.id == s.shared_by).first()
         result.append(ShareResponse(
             id=s.id,
             password_entry_id=s.password_entry_id,
             shared_with_user_id=s.shared_with_user_id,
             shared_with_username=target.username if target else "",
             shared_by=s.shared_by,
+            shared_by_name=sharer.username if sharer else "",
             permission=s.permission,
             created_at=s.created_at,
         ))
@@ -520,3 +543,56 @@ def revoke_share(
     db.delete(share)
     db.commit()
     return {"message": "已撤销"}
+
+
+@router.post("/{password_id}/grant", response_model=ShareResponse)
+def grant_access(
+    password_id: int,
+    req: ShareCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_role(Role.ADMIN)),
+):
+    """Admin grants a user access to any password (regardless of security level)."""
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if entry.security_level == "personal":
+        raise HTTPException(status_code=403, detail="个人密码不允许赋权")
+    target_user = db.query(User).filter(User.id == req.shared_with_user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="目标用户不存在")
+    existing = db.query(PasswordShare).filter(
+        PasswordShare.password_entry_id == password_id,
+        PasswordShare.shared_with_user_id == req.shared_with_user_id,
+    ).first()
+    if existing:
+        existing.permission = req.permission
+        db.commit()
+        db.refresh(existing)
+        log_action(db, current_user.id, "password.grant", "password", password_id,
+                   f"更新 {target_user.username} 对 {entry.title} 的权限为 {req.permission}")
+        return ShareResponse(
+            id=existing.id, password_entry_id=existing.password_entry_id,
+            shared_with_user_id=existing.shared_with_user_id,
+            shared_with_username=target_user.username,
+            shared_by=existing.shared_by, shared_by_name=current_user.username,
+            permission=existing.permission, created_at=existing.created_at,
+        )
+    share = PasswordShare(
+        password_entry_id=password_id,
+        shared_with_user_id=req.shared_with_user_id,
+        shared_by=current_user.id,
+        permission=req.permission,
+    )
+    db.add(share)
+    db.commit()
+    db.refresh(share)
+    log_action(db, current_user.id, "password.grant", "password", password_id,
+               f"授权 {target_user.username} {req.permission} 权限 - {entry.title}")
+    return ShareResponse(
+        id=share.id, password_entry_id=share.password_entry_id,
+        shared_with_user_id=share.shared_with_user_id,
+        shared_with_username=target_user.username,
+        shared_by=share.shared_by, shared_by_name=current_user.username,
+        permission=share.permission, created_at=share.created_at,
+    )
