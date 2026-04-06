@@ -1,108 +1,83 @@
 <template>
   <div>
-    <h2 style="margin-bottom: 20px">工作台</h2>
+    <h2 style="margin-bottom: 24px">Dashboard</h2>
 
-    <!-- SSH verification failed alert -->
-    <el-alert
-      v-if="invalidPasswords.length > 0"
-      :title="`${invalidPasswords.length} 个服务器密码验证失败`"
-      type="error"
-      show-icon
-      :closable="false"
-      style="margin-bottom: 12px"
-    >
-      <div style="margin-top: 8px">
-        <div v-for="p in invalidPasswords" :key="p.id" style="margin-bottom: 4px; display: flex; align-items: center; gap: 8px">
-          <el-tag type="danger" size="small" effect="dark">密码失效</el-tag>
-          <span>{{ p.title }}</span>
-          <span style="color: #999">({{ p.host }}{{ p.port ? ':' + p.port : '' }})</span>
-          <span v-if="p.last_verified_at" style="color: #999; font-size: 12px">验证于 {{ formatTime(p.last_verified_at) }}</span>
+    <!-- Alerts -->
+    <div v-if="invalidPasswords.length > 0" class="alert alert-danger">
+      <span class="alert-icon">!</span>
+      <div>
+        <strong>{{ invalidPasswords.length }} server password(s) failed verification</strong>
+        <div v-for="p in invalidPasswords" :key="p.id" class="alert-item">
+          {{ p.title }} <span class="dim">{{ p.host }}:{{ p.port || 22 }}</span>
         </div>
       </div>
-    </el-alert>
+    </div>
 
-    <!-- Expiring passwords alert -->
-    <el-alert
-      v-if="expiringPasswords.length > 0"
-      :title="`${expiringPasswords.length} 个服务器密码即将过期`"
-      type="warning"
-      show-icon
-      :closable="false"
-      style="margin-bottom: 12px"
-    >
-      <div style="margin-top: 8px">
-        <div v-for="p in expiringPasswords" :key="p.id" style="margin-bottom: 4px; display: flex; align-items: center; gap: 8px">
-          <el-tag :type="p.expire_status === 'expired' ? 'danger' : 'warning'" size="small" effect="dark">
-            {{ p.expire_status === 'expired' ? '已过期' : `${p.expire_remaining_days}天后过期` }}
-          </el-tag>
-          <span>{{ p.title }}</span>
-          <span style="color: #999">({{ p.host }}{{ p.port ? ':' + p.port : '' }})</span>
+    <div v-if="expiringPasswords.length > 0" class="alert alert-warning">
+      <span class="alert-icon">&#9888;</span>
+      <div>
+        <strong>{{ expiringPasswords.length }} server password(s) expiring soon</strong>
+        <div v-for="p in expiringPasswords" :key="p.id" class="alert-item">
+          <span :class="p.expire_status === 'expired' ? 'text-red' : 'text-yellow'">
+            {{ p.expire_status === 'expired' ? 'expired' : `${p.expire_remaining_days}d left` }}
+          </span>
+          {{ p.title }} <span class="dim">{{ p.host }}:{{ p.port || 22 }}</span>
         </div>
       </div>
-    </el-alert>
+    </div>
 
-    <el-row :gutter="20">
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header><span>网站密码</span></template>
-          <div class="stat-num">{{ stats.websiteCount }}</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header><span>服务器密码</span></template>
-          <div class="stat-num">{{ stats.serverCount }}</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover">
-          <template #header><span>我的团队</span></template>
-          <div class="stat-num">{{ stats.teams }}</div>
-        </el-card>
-      </el-col>
-      <el-col :span="6">
-        <el-card shadow="hover" :class="{ 'expire-card': stats.expiredCount > 0 }">
-          <template #header><span>密码过期/即将过期</span></template>
-          <div class="stat-num" :style="{ color: stats.expiredCount > 0 ? '#f56c6c' : '#409eff' }">
-            {{ stats.expiredCount }}
-          </div>
-        </el-card>
-      </el-col>
-    </el-row>
+    <!-- Stats -->
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Websites</div>
+        <div class="stat-value">{{ stats.websiteCount }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Servers</div>
+        <div class="stat-value">{{ stats.serverCount }}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Teams</div>
+        <div class="stat-value">{{ stats.teams }}</div>
+      </div>
+      <div class="stat-card" :class="{ 'stat-alert': stats.expiredCount > 0 }">
+        <div class="stat-label">Expiring</div>
+        <div class="stat-value" :style="{ color: stats.expiredCount > 0 ? 'var(--red)' : '' }">{{ stats.expiredCount }}</div>
+      </div>
+    </div>
 
-    <el-card style="margin-top: 20px">
-      <template #header><span>最近密码</span></template>
-      <el-table :data="recentPasswords" stripe>
-        <el-table-column label="分类" width="90">
-          <template #default="{ row }">
-            <el-tag :type="row.category === 'server' ? 'danger' : ''" size="small" effect="plain">
-              {{ row.category === 'server' ? '服务器' : '网站' }}
-            </el-tag>
+    <!-- Recent -->
+    <div class="section-header">Recent Passwords</div>
+    <el-table :data="recentPasswords" style="width: 100%">
+      <el-table-column label="Type" width="80">
+        <template #default="{ row }">
+          <span class="type-dot" :class="row.category === 'server' ? 'dot-red' : 'dot-blue'"></span>
+          {{ row.category === 'server' ? 'SVR' : 'WEB' }}
+        </template>
+      </el-table-column>
+      <el-table-column prop="title" label="Title" />
+      <el-table-column prop="username" label="Account" />
+      <el-table-column label="Address" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span class="dim">{{ row.category === 'server' ? `${row.host}:${row.port || 22}` : row.url }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column label="Status" width="100">
+        <template #default="{ row }">
+          <template v-if="row.expire_days > 0">
+            <span v-if="row.expire_status === 'expired'" class="text-red">expired</span>
+            <span v-else-if="row.expire_status === 'warning'" class="text-yellow">{{ row.expire_remaining_days }}d</span>
+            <span v-else class="text-green">ok</span>
           </template>
-        </el-table-column>
-        <el-table-column prop="title" label="标题" />
-        <el-table-column prop="username" label="用户名" />
-        <el-table-column label="地址" show-overflow-tooltip>
-          <template #default="{ row }">
-            <span v-if="row.category === 'server'">{{ row.host }}{{ row.port ? ':' + row.port : '' }}</span>
-            <span v-else>{{ row.url }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="密码状态" width="120">
-          <template #default="{ row }">
-            <template v-if="row.expire_days > 0">
-              <el-tag v-if="row.expire_status === 'expired'" type="danger" size="small" effect="dark">已过期</el-tag>
-              <el-tag v-else-if="row.expire_status === 'warning'" type="warning" size="small">{{ row.expire_remaining_days }}天</el-tag>
-              <el-tag v-else type="success" size="small">正常</el-tag>
-            </template>
-            <span v-else style="color:#999; font-size:12px">-</span>
-          </template>
-        </el-table-column>
-        <el-table-column prop="updated_at" label="更新时间" width="180">
-          <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
-        </el-table-column>
-      </el-table>
-    </el-card>
+          <span v-else class="dim">-</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="updated_at" label="Updated" width="170">
+        <template #default="{ row }">
+          <span class="dim">{{ formatTime(row.updated_at) }}</span>
+        </template>
+      </el-table-column>
+    </el-table>
   </div>
 </template>
 
@@ -137,13 +112,100 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.stat-num {
-  font-size: 36px;
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.stat-card {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius);
+  padding: 20px 24px;
+  transition: border-color 0.15s;
+}
+
+.stat-card:hover {
+  border-color: var(--border-default);
+}
+
+.stat-card.stat-alert {
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.stat-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 8px;
+}
+
+.stat-value {
+  font-size: 32px;
   font-weight: 700;
-  color: #409eff;
-  text-align: center;
+  color: var(--text-primary);
+  letter-spacing: -1px;
 }
-.expire-card {
-  border-color: #f56c6c;
+
+.section-header {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 12px;
 }
+
+.alert {
+  display: flex;
+  gap: 12px;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  margin-bottom: 16px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.alert-danger {
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.alert-warning {
+  border-color: rgba(245, 166, 35, 0.25);
+}
+
+.alert-icon {
+  font-size: 16px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.alert-danger .alert-icon { color: var(--red); }
+.alert-warning .alert-icon { color: var(--yellow); }
+
+.alert-item {
+  color: var(--text-secondary);
+  margin-top: 2px;
+}
+
+.dim { color: var(--text-tertiary); }
+.text-red { color: var(--red); font-weight: 500; }
+.text-yellow { color: var(--yellow); font-weight: 500; }
+.text-green { color: var(--green); font-weight: 500; }
+
+.type-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  margin-right: 4px;
+}
+.dot-red { background: var(--red); }
+.dot-blue { background: #60a5fa; }
 </style>

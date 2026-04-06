@@ -2,25 +2,30 @@
   <div class="login-page">
     <div class="login-card">
       <div class="login-header">
-        <el-icon size="40" color="#409eff"><Lock /></el-icon>
-        <h2>团队协作密码平台</h2>
-        <p>安全管理你的团队密码</p>
+        <div class="logo-icon">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M12 2L3 7v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V7l-9-5z"/>
+            <path d="M12 8v4m0 4h.01"/>
+          </svg>
+        </div>
+        <h2>Password Vault</h2>
+        <p>Secure team credential management</p>
       </div>
       <el-form ref="formRef" :model="form" :rules="rules" @submit.prevent="handleLogin">
         <el-form-item prop="username">
-          <el-input v-model="form.username" prefix-icon="User" placeholder="用户名" size="large" />
+          <el-input v-model="form.username" placeholder="Username" size="large" />
         </el-form-item>
         <el-form-item prop="password">
-          <el-input v-model="form.password" prefix-icon="Lock" placeholder="密码" type="password" show-password size="large" />
+          <el-input v-model="form.password" placeholder="Password" type="password" show-password size="large" />
         </el-form-item>
         <el-form-item>
           <el-button type="primary" native-type="submit" :loading="loading" size="large" style="width: 100%">
-            登录
+            Sign In
           </el-button>
         </el-form-item>
       </el-form>
       <div class="login-footer">
-        <span style="color: #999; font-size: 13px">默认管理员: admin / admin123</span>
+        <span>Default: admin / admin123</span>
       </div>
     </div>
   </div>
@@ -62,29 +67,40 @@ async function handleLogin() {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(135deg, #1d1e2c 0%, #2b3a67 100%);
+  background: var(--bg-primary);
 }
 .login-card {
-  width: 400px;
-  padding: 40px;
-  background: #fff;
-  border-radius: 12px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  width: 380px;
+  padding: 48px 40px 36px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-subtle);
+  border-radius: 16px;
 }
 .login-header {
   text-align: center;
-  margin-bottom: 30px;
+  margin-bottom: 36px;
+}
+.logo-icon {
+  color: var(--text-primary);
+  margin-bottom: 16px;
 }
 .login-header h2 {
-  margin: 12px 0 4px;
-  color: #1d1e2c;
+  font-size: 22px;
+  font-weight: 600;
+  color: var(--text-primary);
+  letter-spacing: -0.5px;
+  margin-bottom: 6px;
 }
 .login-header p {
-  color: #999;
-  font-size: 14px;
+  color: var(--text-tertiary);
+  font-size: 13px;
 }
 .login-footer {
   text-align: center;
-  margin-top: 10px;
+  margin-top: 8px;
+}
+.login-footer span {
+  color: var(--text-tertiary);
+  font-size: 12px;
 }
 </style>

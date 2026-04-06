@@ -8,13 +8,15 @@
 
       <!-- Loading -->
       <div v-if="loading" style="text-align: center; padding: 40px 0">
-        <el-icon class="is-loading" size="32" color="#409eff"><Loading /></el-icon>
+        <div class="el-icon is-loading" style="font-size: 32px; color: #409eff">
+          <svg viewBox="0 0 1024 1024" width="1em" height="1em"><path d="M512 64a32 32 0 0 1 32 32v192a32 32 0 0 1-64 0V96a32 32 0 0 1 32-32" fill="currentColor"/></svg>
+        </div>
         <p style="color: #999; margin-top: 12px">正在验证邀请链接...</p>
       </div>
 
       <!-- Error -->
       <div v-else-if="error" style="text-align: center; padding: 30px 0">
-        <el-icon size="48" color="#f56c6c"><CircleCloseFilled /></el-icon>
+        <div style="font-size: 48px; color: #f56c6c">&#10060;</div>
         <p style="color: #f56c6c; margin-top: 12px; font-size: 16px">{{ error }}</p>
         <el-button type="primary" style="margin-top: 20px" @click="$router.push('/login')">返回登录</el-button>
       </div>
