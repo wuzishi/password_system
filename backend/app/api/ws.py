@@ -623,6 +623,10 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
         channel = client.invoke_shell(term="xterm-256color", width=120, height=40)
         channel.settimeout(0.1)
 
+        # 发送 init 消息给前端（含 cwd 检测 nonce）
+        cwd_nonce = secrets.token_hex(4)
+        await websocket.send_text(json.dumps({"init": {"cwd_nonce": cwd_nonce}}))
+
         output_queue = asyncio.Queue()
         stop_event = threading.Event()
 
@@ -671,6 +675,12 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
                     else:
                         # 限制单次输入长度，防止注入超大数据
                         channel.send(text[:4096])
+                        # 检测回车：注入隐藏的 pwd 命令用于 cwd 同步
+                        if "\r" in text or "\n" in text:
+                            # 延迟注入让原命令先执行
+                            await asyncio.sleep(0.05)
+                            marker_cmd = f' echo "~~CWD{cwd_nonce}~~$(pwd)~~CWDEND~~"\n'
+                            channel.send(marker_cmd)
                 elif "bytes" in msg:
                     channel.send(msg["bytes"][:4096])
         except WebSocketDisconnect:

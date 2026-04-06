@@ -21,7 +21,7 @@ from app.models.invitation import Invitation
 from app.models.role_permission import RolePermission, ALL_PERMISSIONS, DEFAULT_PERMISSIONS
 from app.services.auth_service import hash_password
 from app.core.security import Role
-from app.api import auth, users, teams, passwords, audit, ws, approvals, permissions
+from app.api import auth, users, teams, passwords, audit, ws, approvals, permissions, sftp
 
 
 logging.basicConfig(level=logging.INFO)
@@ -133,6 +133,7 @@ app.include_router(audit.router)
 app.include_router(ws.router)
 app.include_router(approvals.router)
 app.include_router(permissions.router)
+app.include_router(sftp.router)
 
 
 @app.get("/api/health")
