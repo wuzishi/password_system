@@ -25,7 +25,7 @@
         </el-form-item>
       </el-form>
       <div class="login-footer">
-        <span>默认管理员: admin / admin123</span>
+        <span>安全登录</span>
       </div>
     </div>
     <!-- Theme toggle on login page -->

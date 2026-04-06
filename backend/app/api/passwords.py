@@ -1,7 +1,9 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 from datetime import datetime, timezone
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 from app.database import get_db
 from app.models.user import User
 from app.models.password_entry import PasswordEntry
@@ -19,6 +21,7 @@ from app.api.deps import get_current_user, require_role
 from app.core.security import Role, SecurityLevel, has_permission
 
 router = APIRouter(prefix="/api/passwords", tags=["密码管理"])
+limiter = Limiter(key_func=get_remote_address)
 
 
 def _can_see(user: User, entry: PasswordEntry, db: Session) -> bool:
@@ -148,10 +151,15 @@ def list_passwords(
     keyword: str | None = None,
     category: str | None = None,
     expire_status: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(PasswordEntry)
+    query = db.query(PasswordEntry).options(
+        joinedload(PasswordEntry.creator),
+        joinedload(PasswordEntry.team),
+    )
     if team_id is not None:
         query = query.filter(PasswordEntry.team_id == team_id)
     if is_personal is not None:
@@ -159,14 +167,19 @@ def list_passwords(
     if category:
         query = query.filter(PasswordEntry.category == category)
     if keyword:
+        kw = keyword[:100]  # 限制搜索关键词长度
         query = query.filter(
-            PasswordEntry.title.contains(keyword) | PasswordEntry.username.contains(keyword) | PasswordEntry.url.contains(keyword) | PasswordEntry.host.contains(keyword)
+            PasswordEntry.title.contains(kw) | PasswordEntry.username.contains(kw) | PasswordEntry.url.contains(kw) | PasswordEntry.host.contains(kw)
         )
+    page_size = min(max(page_size, 1), 200)  # 限制 1-200
+    page = max(page, 1)
     entries = query.order_by(PasswordEntry.updated_at.desc()).all()
     results = [_to_response(e, db, current_user) for e in entries if _can_see(current_user, e, db)]
     if expire_status:
         results = [r for r in results if r["expire_status"] == expire_status]
-    return results
+    # 分页
+    start = (page - 1) * page_size
+    return results[start:start + page_size]
 
 
 @router.get("/expiring", response_model=List[PasswordResponse])
@@ -175,7 +188,10 @@ def list_expiring_passwords(
     current_user: User = Depends(get_current_user),
 ):
     """Get passwords that are expired or expiring within 15 days."""
-    entries = db.query(PasswordEntry).filter(PasswordEntry.expire_days > 0).all()
+    entries = db.query(PasswordEntry).options(
+        joinedload(PasswordEntry.creator),
+        joinedload(PasswordEntry.team),
+    ).filter(PasswordEntry.expire_days > 0).all()
     results = []
     for e in entries:
         if not _can_see(current_user, e, db):
@@ -243,6 +259,7 @@ def create_password(
 
 
 @router.post("/{password_id}/decrypt", response_model=PasswordDecryptResponse)
+@limiter.limit("20/minute")
 def decrypt_password(
     password_id: int,
     req: DecryptRequest,
@@ -251,12 +268,17 @@ def decrypt_password(
     current_user: User = Depends(get_current_user),
 ):
     # --- 二次验证 ---
+    ip = request.client.host if request.client else ""
     new_token = None
     if req.decrypt_token:
         if not verify_decrypt_token(req.decrypt_token, current_user.id):
+            log_action(db, current_user.id, "password.decrypt_fail", "password", password_id,
+                       "解密令牌过期或无效", ip)
             raise HTTPException(status_code=401, detail="解密令牌已过期，请重新验证")
     elif req.password_confirm:
         if not verify_password(req.password_confirm, current_user.hashed_password):
+            log_action(db, current_user.id, "password.decrypt_fail", "password", password_id,
+                       "二次密码验证失败", ip)
             raise HTTPException(status_code=403, detail="密码验证失败")
         new_token = create_decrypt_token(current_user.id)
     else:
@@ -268,6 +290,8 @@ def decrypt_password(
         raise HTTPException(status_code=404, detail="密码不存在")
     can, reason = _can_decrypt(current_user, entry, db)
     if not can:
+        log_action(db, current_user.id, "password.decrypt_denied", "password", password_id,
+                   f"访问被拒: {reason}", ip)
         raise HTTPException(status_code=403, detail=reason)
 
     # --- 解密 + 懒迁移 ---
@@ -284,7 +308,6 @@ def decrypt_password(
         db.commit()
 
     # --- 审计日志 ---
-    ip = request.client.host if request.client else ""
     log_action(db, current_user.id, "password.decrypt", "password", entry.id,
                f"查看密码 {entry.title}", ip)
 
@@ -379,8 +402,10 @@ def delete_password(
 # --- Server password verification ---
 
 @router.post("/{password_id}/verify-server")
+@limiter.limit("5/minute")
 def verify_server_password(
     password_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -403,7 +428,11 @@ def verify_server_password(
 
     now = datetime.now(timezone.utc)
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.WarningPolicy())
+    try:
+        client.load_system_host_keys()
+    except Exception:
+        pass
     try:
         client.connect(
             hostname=entry.host,
@@ -429,12 +458,88 @@ def verify_server_password(
                    f"验证服务器密码 {entry.title} - 已失效")
         return {"status": "invalid", "message": "密码已失效，认证失败"}
     except Exception as e:
+        import logging
+        logging.error(f"SSH verify error for {entry.host}: {e}")
         entry.verify_status = "error"
         entry.last_verified_at = now
         db.commit()
-        return {"status": "error", "message": f"连接失败: {str(e)}"}
+        return {"status": "error", "message": "连接失败，请检查主机地址和网络"}
     finally:
         client.close()
+
+
+# --- Database password verification ---
+
+@router.post("/{password_id}/verify-database")
+@limiter.limit("5/minute")
+def verify_database_password(
+    password_id: int,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """尝试连接数据库，验证密码是否有效。"""
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if entry.category != "database":
+        raise HTTPException(status_code=400, detail="仅支持数据库类型密码")
+    if not _has_operate_permission(current_user, entry, db):
+        raise HTTPException(status_code=403, detail="无操作权限，请申请授权")
+    if not entry.host:
+        raise HTTPException(status_code=400, detail="未配置主机地址")
+
+    plaintext_password = decrypt(entry.encrypted_password)
+    host = entry.host
+    port = entry.port
+    username = entry.username or "root"
+    db_type = (entry.db_type or "mysql").lower()
+    db_name = entry.db_name or ""
+    now = datetime.now(timezone.utc)
+
+    try:
+        if db_type in ("mysql", "mariadb"):
+            import pymysql
+            port = port or 3306
+            conn = pymysql.connect(host=host, port=port, user=username,
+                                   password=plaintext_password, database=db_name or None,
+                                   connect_timeout=10)
+            conn.close()
+        elif db_type in ("postgresql", "postgres", "pg"):
+            import psycopg2
+            port = port or 5432
+            conn = psycopg2.connect(host=host, port=port, user=username,
+                                    password=plaintext_password, dbname=db_name or "postgres",
+                                    connect_timeout=10)
+            conn.close()
+        else:
+            raise HTTPException(status_code=400, detail=f"不支持验证的数据库类型: {db_type}")
+
+        entry.verify_status = "valid"
+        entry.last_verified_at = now
+        db.commit()
+        log_action(db, current_user.id, "password.verify_db", "password", entry.id,
+                   f"验证数据库密码 {entry.title} - 有效")
+        return {"status": "valid", "message": "密码有效，连接成功"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        import logging
+        logging.error(f"DB verify error for {entry.host}: {e}")
+        err_msg = str(e).lower()
+        if "access denied" in err_msg or "authentication" in err_msg or "password" in err_msg:
+            entry.verify_status = "invalid"
+            entry.last_verified_at = now
+            db.commit()
+            log_action(db, current_user.id, "password.verify_db", "password", entry.id,
+                       f"验证数据库密码 {entry.title} - 已失效")
+            return {"status": "invalid", "message": "密码已失效，认证失败"}
+        else:
+            entry.verify_status = "error"
+            entry.last_verified_at = now
+            db.commit()
+            return {"status": "error", "message": "连接失败，请检查主机地址和网络"}
 
 
 # --- Sharing ---

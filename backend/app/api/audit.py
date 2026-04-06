@@ -22,14 +22,19 @@ def list_audit_logs(
 ):
     query = db.query(AuditLog)
     if action:
-        query = query.filter(AuditLog.action.contains(action))
+        query = query.filter(AuditLog.action.contains(action[:100]))
     if user_id:
         query = query.filter(AuditLog.user_id == user_id)
     total = query.count()
     logs = query.order_by(AuditLog.timestamp.desc()).offset((page - 1) * size).limit(size).all()
+
+    # Batch load users to avoid N+1
+    user_ids = {log.user_id for log in logs}
+    users = {u.id: u for u in db.query(User).filter(User.id.in_(user_ids)).all()} if user_ids else {}
+
     result = []
     for log in logs:
-        user = db.query(User).filter(User.id == log.user_id).first()
+        user = users.get(log.user_id)
         result.append(AuditLogResponse(
             id=log.id,
             user_id=log.user_id,

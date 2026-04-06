@@ -99,7 +99,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, onBeforeUnmount } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useThemeStore } from '../../stores/theme'
@@ -135,10 +135,15 @@ async function loadPendingCount() {
   } catch {}
 }
 
+let _pollTimer = null
 onMounted(() => {
   loadPendingCount()
-  setInterval(loadPendingCount, 30000)
+  _pollTimer = setInterval(loadPendingCount, 30000)
   window.addEventListener('approval-changed', loadPendingCount)
+})
+onBeforeUnmount(() => {
+  if (_pollTimer) clearInterval(_pollTimer)
+  window.removeEventListener('approval-changed', loadPendingCount)
 })
 
 const roleTag = computed(() => ROLES[auth.role] || { label: auth.role, type: 'info' })

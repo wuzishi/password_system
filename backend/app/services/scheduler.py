@@ -19,7 +19,11 @@ def _verify_single(entry: PasswordEntry, db) -> str:
     username = entry.username or "root"
 
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    client.set_missing_host_key_policy(paramiko.WarningPolicy())
+    try:
+        client.load_system_host_keys()
+    except Exception:
+        pass
     try:
         client.connect(
             hostname=entry.host,

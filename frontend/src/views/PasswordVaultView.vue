@@ -112,7 +112,7 @@
       </el-table-column>
       <el-table-column label="连接验证" width="130">
         <template #default="{ row }">
-          <template v-if="row.category === 'server'">
+          <template v-if="row.category === 'server' || row.category === 'database'">
             <div style="display: flex; flex-direction: column; gap: 2px">
               <el-tag v-if="row.verify_status === 'valid'" type="success" size="small">已验证</el-tag>
               <el-tag v-else-if="row.verify_status === 'invalid'" type="danger" size="small" effect="dark">密码失效</el-tag>
@@ -129,8 +129,8 @@
         <template #default="{ row }">
           <template v-if="row.has_permission">
             <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="row.category === 'server'" link size="small" style="color: var(--yellow)" @click="openChangePwd(row)">改密</el-button>
-            <el-button v-if="row.category === 'server'" link type="success" size="small" :loading="verifyingMap[row.id]" @click="handleVerify(row)">验证</el-button>
+            <el-button v-if="row.category === 'server' || row.category === 'database'" link size="small" style="color: var(--yellow)" @click="openChangePwd(row)">改密</el-button>
+            <el-button v-if="row.category === 'server' || row.category === 'database'" link type="success" size="small" :loading="verifyingMap[row.id]" @click="handleVerify(row)">验证</el-button>
             <el-button link type="warning" size="small" @click="openShare(row)" v-if="canShare">授权</el-button>
             <el-popconfirm title="确认删除？" @confirm="handleDelete(row.id)">
               <template #reference>
@@ -358,12 +358,13 @@
       </template>
     </el-dialog>
 
-    <!-- Change Server Password Dialog -->
-    <el-dialog v-model="changePwdVisible" title="远程修改服务器密码" width="620px" :close-on-click-modal="false" destroy-on-close>
+    <!-- Change Password Dialog (Server / Database) -->
+    <el-dialog v-model="changePwdVisible" :title="changePwdRow?.category === 'database' ? '远程修改数据库密码' : '远程修改服务器密码'" width="620px" :close-on-click-modal="false" destroy-on-close>
       <div style="margin-bottom: 12px">
-        <span style="color: #666">服务器: </span>
+        <span style="color: #666">{{ changePwdRow?.category === 'database' ? '数据库' : '服务器' }}: </span>
         <el-tag size="small">{{ changePwdRow?.title }}</el-tag>
-        <span style="margin-left: 8px; color: #999">{{ changePwdRow?.host }}:{{ changePwdRow?.port || 22 }}</span>
+        <span style="margin-left: 8px; color: #999">{{ changePwdRow?.host }}:{{ changePwdRow?.category === 'database' ? (changePwdRow?.port || (changePwdRow?.db_type === 'postgresql' ? 5432 : 3306)) : (changePwdRow?.port || 22) }}</span>
+        <span v-if="changePwdRow?.db_name" style="margin-left: 4px; color: #999"> / {{ changePwdRow?.db_name }}</span>
       </div>
       <div style="margin-bottom: 12px; display: flex; align-items: center; gap: 8px">
         <span style="color: #666; white-space: nowrap">新密码:</span>
@@ -389,10 +390,10 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
+import { ref, reactive, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useDecryptStore } from '../stores/decrypt'
-import { getPasswords, createPassword, updatePassword, deletePassword, decryptPassword, sharePassword, getShares, revokeShare, verifyServerPassword, grantAccess } from '../api/passwords'
+import { getPasswords, createPassword, updatePassword, deletePassword, decryptPassword, sharePassword, getShares, revokeShare, verifyServerPassword, verifyDatabasePassword, grantAccess } from '../api/passwords'
 import { createApproval, checkAccess } from '../api/approvals'
 import { getTeams } from '../api/teams'
 import { getAllUsers } from '../api/users'
@@ -704,14 +705,18 @@ function openChangePwd(row) {
   changePwdVisible.value = true
 }
 
+let _changePwdWs = null
 function execChangePwd() {
   changePwdRunning.value = true
   changePwdOutput.value = ''
   changePwdNewResult.value = ''
 
   const token = localStorage.getItem('token')
-  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/change-password/${changePwdRow.value.id}?token=${token}`
+  const wsPath = changePwdRow.value.category === 'database' ? 'change-db-password' : 'change-password'
+  const wsUrl = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/api/ws/${wsPath}/${changePwdRow.value.id}?token=${token}`
+  if (_changePwdWs) { try { _changePwdWs.close() } catch {} }
   const ws = new WebSocket(wsUrl)
+  _changePwdWs = ws
 
   ws.onopen = () => {
     ws.send(JSON.stringify({ action: 'start', new_password: changePwdNew.value || '' }))
@@ -731,7 +736,7 @@ function execChangePwd() {
       changePwdRunning.value = false
       changePwdDone.value = true
       if (msg.data === 'success') {
-        ElMessage.success('服务器密码修改成功')
+        ElMessage.success(changePwdRow.value?.category === 'database' ? '数据库密码修改成功' : '服务器密码修改成功')
         loadList()
       } else {
         ElMessage.error('密码修改失败，请查看输出日志')
@@ -765,7 +770,8 @@ function formatShortTime(t) {
 async function handleVerify(row) {
   verifyingMap.value = { ...verifyingMap.value, [row.id]: true }
   try {
-    const { data } = await verifyServerPassword(row.id)
+    const verifyFn = row.category === 'database' ? verifyDatabasePassword : verifyServerPassword
+    const { data } = await verifyFn(row.id)
     if (data.status === 'valid') {
       ElMessage.success(`${row.title}: ${data.message}`)
     } else if (data.status === 'invalid') {
@@ -893,5 +899,12 @@ async function handleRevokeShare(row) {
 
 onMounted(async () => {
   await Promise.all([loadList(), getTeams().then(r => teams.value = r.data), getAllUsers().then(r => allUsers.value = r.data)])
+})
+onBeforeUnmount(() => {
+  if (_changePwdWs && _changePwdWs.readyState === WebSocket.OPEN) {
+    _changePwdWs.close()
+  }
+  // 清除内存中的明文密码
+  revealedMap.value = {}
 })
 </script>

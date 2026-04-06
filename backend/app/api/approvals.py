@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 from typing import List
 from datetime import datetime, timezone, timedelta
 from app.database import get_db
@@ -15,22 +15,18 @@ from app.core.security import Role
 router = APIRouter(prefix="/api/approvals", tags=["审批管理"])
 
 
-def _to_response(a: ApprovalRequest, db: Session) -> dict:
-    requester = db.query(User).filter(User.id == a.requester_id).first()
-    approver = db.query(User).filter(User.id == a.approver_id).first() if a.approver_id else None
-    entry = db.query(PasswordEntry).filter(PasswordEntry.id == a.password_entry_id).first()
-    target = db.query(User).filter(User.id == a.share_target_user_id).first() if a.share_target_user_id else None
+def _to_response(a: ApprovalRequest) -> dict:
     return {
         "id": a.id,
         "requester_id": a.requester_id,
-        "requester_name": requester.username if requester else "",
+        "requester_name": a.requester.username if a.requester else "",
         "approver_id": a.approver_id,
-        "approver_name": approver.username if approver else None,
+        "approver_name": a.approver.username if a.approver else None,
         "password_entry_id": a.password_entry_id,
-        "password_title": entry.title if entry else "",
+        "password_title": a.password_entry.title if a.password_entry else "",
         "request_type": a.request_type,
         "share_target_user_id": a.share_target_user_id,
-        "share_target_username": target.username if target else None,
+        "share_target_username": a.share_target_user.username if a.share_target_user else None,
         "status": a.status,
         "reason": a.reason or "",
         "reject_reason": a.reject_reason or "",
@@ -71,23 +67,31 @@ def create_approval(
     log_action(db, current_user.id, "approval.create", "approval", approval.id,
                f"发起{req.request_type}审批 - {entry.title}")
 
-    return _to_response(approval, db)
+    return _to_response(approval)
 
 
 @router.get("", response_model=List[ApprovalResponse])
 def list_approvals(
     status: str | None = None,
+    page: int = 1,
+    page_size: int = 100,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    query = db.query(ApprovalRequest)
+    page_size = min(max(page_size, 1), 200)
+    page = max(page, 1)
+    query = db.query(ApprovalRequest).options(
+        joinedload(ApprovalRequest.requester),
+        joinedload(ApprovalRequest.approver),
+        joinedload(ApprovalRequest.password_entry),
+        joinedload(ApprovalRequest.share_target_user),
+    )
     if current_user.role != Role.ADMIN:
-        # Non-admin only sees their own requests
         query = query.filter(ApprovalRequest.requester_id == current_user.id)
     if status:
         query = query.filter(ApprovalRequest.status == status)
-    results = query.order_by(ApprovalRequest.created_at.desc()).all()
-    return [_to_response(a, db) for a in results]
+    results = query.order_by(ApprovalRequest.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    return [_to_response(a) for a in results]
 
 
 @router.get("/pending-count")
