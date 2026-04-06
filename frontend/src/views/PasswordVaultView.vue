@@ -125,18 +125,29 @@
         </template>
       </el-table-column>
       <el-table-column prop="creator_name" label="创建人" width="90" />
-      <el-table-column label="操作" width="310" fixed="right">
+      <el-table-column label="操作" width="180" fixed="right">
         <template #default="{ row }">
           <template v-if="row.has_permission">
-            <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
-            <el-button v-if="row.category === 'server' || row.category === 'database'" link size="small" style="color: var(--yellow)" @click="openChangePwd(row)">改密</el-button>
-            <el-button v-if="row.category === 'server' || row.category === 'database'" link type="success" size="small" :loading="verifyingMap[row.id]" @click="handleVerify(row)">验证</el-button>
-            <el-button link type="warning" size="small" @click="openShare(row)" v-if="canShare">授权</el-button>
-            <el-popconfirm title="确认删除？" @confirm="handleDelete(row.id)">
-              <template #reference>
-                <el-button link type="danger" size="small">删除</el-button>
-              </template>
-            </el-popconfirm>
+            <div style="display: flex; align-items: center; gap: 4px">
+              <el-button link type="primary" size="small" @click="openEdit(row)">编辑</el-button>
+              <el-button v-if="row.category === 'server' || row.category === 'database'" link size="small" style="color: var(--yellow)" @click="openChangePwd(row)">改密</el-button>
+              <el-dropdown trigger="click" @command="(cmd) => handleMoreAction(cmd, row)">
+                <el-button link size="small" style="color: var(--text-tertiary)">更多<el-icon style="margin-left:2px"><ArrowDown /></el-icon></el-button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item v-if="row.category === 'server' || row.category === 'database'" command="verify">
+                      <el-icon><CircleCheck /></el-icon>连接验证
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="canShare" command="share">
+                      <el-icon><Share /></el-icon>授权
+                    </el-dropdown-item>
+                    <el-dropdown-item command="delete" divided style="color: var(--el-color-danger)">
+                      <el-icon><Delete /></el-icon>删除
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
           </template>
           <template v-else>
             <el-button link size="small" style="color: var(--yellow)" @click="requestAccess(row)">
@@ -397,7 +408,7 @@ import { getPasswords, createPassword, updatePassword, deletePassword, decryptPa
 import { createApproval, checkAccess } from '../api/approvals'
 import { getTeams } from '../api/teams'
 import { getAllUsers } from '../api/users'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 
 const auth = useAuthStore()
 const decryptStore = useDecryptStore()
@@ -620,9 +631,18 @@ async function handleSave() {
 }
 
 async function handleDelete(id) {
-  await deletePassword(id)
-  ElMessage.success('已删除')
-  loadList()
+  try {
+    await ElMessageBox.confirm('确认删除该密码？', '删除', { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' })
+    await deletePassword(id)
+    ElMessage.success('已删除')
+    loadList()
+  } catch {}
+}
+
+async function handleMoreAction(cmd, row) {
+  if (cmd === 'verify') handleVerify(row)
+  else if (cmd === 'share') openShare(row)
+  else if (cmd === 'delete') handleDelete(row.id)
 }
 
 async function requestAccess(row) {
