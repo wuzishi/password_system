@@ -1,7 +1,6 @@
 version: '3.8'
 
 services:
-  # MySQL 数据库
   db:
     image: mysql:8.0
     container_name: pwd_mysql
@@ -22,14 +21,12 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # 安全加固
     security_opt:
       - no-new-privileges:true
     tmpfs:
       - /tmp
       - /var/run/mysqld
 
-  # FastAPI 后端
   backend:
     build:
       context: ./backend
@@ -47,14 +44,11 @@ services:
       - "8000:8000"
     networks:
       - pwd_net
-    # 安全加固
     security_opt:
       - no-new-privileges:true
-    read_only: true
     tmpfs:
       - /tmp
 
-  # Vue 前端 (Nginx)
   frontend:
     build:
       context: ./frontend
@@ -69,7 +63,6 @@ services:
       - pwd_net
     security_opt:
       - no-new-privileges:true
-    read_only: true
     tmpfs:
       - /tmp
       - /var/cache/nginx
