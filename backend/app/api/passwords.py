@@ -1,0 +1,453 @@
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sqlalchemy.orm import Session
+from typing import List
+from datetime import datetime, timezone
+from app.database import get_db
+from app.models.user import User
+from app.models.password_entry import PasswordEntry
+from app.models.password_share import PasswordShare
+from app.models.team_member import TeamMember
+from app.schemas.password import (
+    PasswordCreate, PasswordUpdate, PasswordResponse,
+    PasswordDecryptResponse, DecryptRequest, ShareCreate, ShareResponse,
+)
+from app.services.crypto_service import encrypt, decrypt, migrate_if_needed
+from app.services.auth_service import verify_password, create_decrypt_token, verify_decrypt_token
+from app.services.audit_service import log_action
+from app.api.deps import get_current_user
+from app.core.security import Role, has_permission
+
+router = APIRouter(prefix="/api/passwords", tags=["密码管理"])
+
+
+def _can_access(user: User, entry: PasswordEntry, db: Session) -> bool:
+    if user.role == Role.ADMIN:
+        return True
+    if entry.created_by == user.id:
+        return True
+    if entry.is_personal:
+        return False
+    if entry.team_id:
+        is_member = db.query(TeamMember).filter(
+            TeamMember.team_id == entry.team_id, TeamMember.user_id == user.id
+        ).first()
+        if is_member:
+            return True
+    shared = db.query(PasswordShare).filter(
+        PasswordShare.password_entry_id == entry.id,
+        PasswordShare.shared_with_user_id == user.id,
+    ).first()
+    return shared is not None
+
+
+def _calc_expire_status(entry: PasswordEntry) -> tuple[str, int | None]:
+    """Returns (status, remaining_days). Status: normal/warning/expired."""
+    if not entry.expire_days or entry.expire_days <= 0:
+        return "normal", None
+    changed_at = entry.password_changed_at or entry.created_at
+    if not changed_at:
+        return "normal", None
+    now = datetime.now(timezone.utc)
+    if changed_at.tzinfo is None:
+        from datetime import timezone as tz
+        changed_at = changed_at.replace(tzinfo=tz.utc)
+    elapsed = (now - changed_at).days
+    remaining = entry.expire_days - elapsed
+    if remaining <= 0:
+        return "expired", remaining
+    elif remaining <= 15:
+        return "warning", remaining
+    else:
+        return "normal", remaining
+
+
+def _to_response(entry: PasswordEntry, db: Session) -> dict:
+    team_name = entry.team.name if entry.team else None
+    creator_name = entry.creator.username if entry.creator else None
+    expire_status, expire_remaining = _calc_expire_status(entry)
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "category": entry.category or "website",
+        "username": entry.username,
+        "url": entry.url,
+        "host": entry.host or "",
+        "port": entry.port,
+        "team_id": entry.team_id,
+        "team_name": team_name,
+        "is_personal": entry.is_personal,
+        "created_by": entry.created_by,
+        "creator_name": creator_name,
+        "expire_days": entry.expire_days or 0,
+        "password_changed_at": entry.password_changed_at,
+        "expire_status": expire_status,
+        "expire_remaining_days": expire_remaining,
+        "verify_status": entry.verify_status or "unknown",
+        "last_verified_at": entry.last_verified_at,
+        "created_at": entry.created_at,
+        "updated_at": entry.updated_at,
+    }
+
+
+@router.get("", response_model=List[PasswordResponse])
+def list_passwords(
+    team_id: int | None = None,
+    is_personal: bool | None = None,
+    keyword: str | None = None,
+    category: str | None = None,
+    expire_status: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    query = db.query(PasswordEntry)
+    if team_id is not None:
+        query = query.filter(PasswordEntry.team_id == team_id)
+    if is_personal is not None:
+        query = query.filter(PasswordEntry.is_personal == is_personal)
+    if category:
+        query = query.filter(PasswordEntry.category == category)
+    if keyword:
+        query = query.filter(
+            PasswordEntry.title.contains(keyword) | PasswordEntry.username.contains(keyword) | PasswordEntry.url.contains(keyword) | PasswordEntry.host.contains(keyword)
+        )
+    entries = query.order_by(PasswordEntry.updated_at.desc()).all()
+    results = [_to_response(e, db) for e in entries if _can_access(current_user, e, db)]
+    if expire_status:
+        results = [r for r in results if r["expire_status"] == expire_status]
+    return results
+
+
+@router.get("/expiring", response_model=List[PasswordResponse])
+def list_expiring_passwords(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """Get passwords that are expired or expiring within 15 days."""
+    entries = db.query(PasswordEntry).filter(PasswordEntry.expire_days > 0).all()
+    results = []
+    for e in entries:
+        if not _can_access(current_user, e, db):
+            continue
+        resp = _to_response(e, db)
+        if resp["expire_status"] in ("expired", "warning"):
+            results.append(resp)
+    results.sort(key=lambda r: r["expire_remaining_days"] or -9999)
+    return results
+
+
+@router.post("", response_model=PasswordResponse)
+def create_password(
+    req: PasswordCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if req.is_personal:
+        if not has_permission(current_user.role, "password.create_personal"):
+            raise HTTPException(status_code=403, detail="权限不足")
+    else:
+        if not has_permission(current_user.role, "password.create_team"):
+            raise HTTPException(status_code=403, detail="权限不足")
+        if req.team_id:
+            if current_user.role != Role.ADMIN:
+                is_member = db.query(TeamMember).filter(
+                    TeamMember.team_id == req.team_id, TeamMember.user_id == current_user.id
+                ).first()
+                if not is_member:
+                    raise HTTPException(status_code=403, detail="不是该团队成员")
+    # Server passwords default to 90-day expiry
+    expire_days = req.expire_days
+    if req.category == "server" and expire_days == 0:
+        expire_days = 90
+    entry = PasswordEntry(
+        title=req.title,
+        category=req.category,
+        username=req.username,
+        encrypted_password=encrypt(req.password),
+        encrypted_notes=encrypt(req.notes) if req.notes else "",
+        url=req.url,
+        host=req.host,
+        port=req.port,
+        team_id=req.team_id if not req.is_personal else None,
+        created_by=current_user.id,
+        is_personal=req.is_personal,
+        expire_days=expire_days,
+        password_changed_at=datetime.now(timezone.utc),
+    )
+    db.add(entry)
+    db.commit()
+    db.refresh(entry)
+    log_action(db, current_user.id, "password.create", "password", entry.id,
+               f"创建{'服务器' if req.category == 'server' else '网站'}密码 {entry.title}")
+    return _to_response(entry, db)
+
+
+@router.post("/{password_id}/decrypt", response_model=PasswordDecryptResponse)
+def decrypt_password(
+    password_id: int,
+    req: DecryptRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    # --- 二次验证 ---
+    new_token = None
+    if req.decrypt_token:
+        if not verify_decrypt_token(req.decrypt_token, current_user.id):
+            raise HTTPException(status_code=401, detail="解密令牌已过期，请重新验证")
+    elif req.password_confirm:
+        if not verify_password(req.password_confirm, current_user.hashed_password):
+            raise HTTPException(status_code=403, detail="密码验证失败")
+        new_token = create_decrypt_token(current_user.id)
+    else:
+        raise HTTPException(status_code=400, detail="需要密码验证")
+
+    # --- 访问控制 ---
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if not _can_access(current_user, entry, db):
+        raise HTTPException(status_code=403, detail="无权访问")
+
+    # --- 解密 + 懒迁移 ---
+    plaintext_password = decrypt(entry.encrypted_password)
+    plaintext_notes = decrypt(entry.encrypted_notes) if entry.encrypted_notes else ""
+
+    new_pw, pw_migrated = migrate_if_needed(entry.encrypted_password)
+    new_notes, notes_migrated = migrate_if_needed(entry.encrypted_notes) if entry.encrypted_notes else (entry.encrypted_notes, False)
+    if pw_migrated or notes_migrated:
+        if pw_migrated:
+            entry.encrypted_password = new_pw
+        if notes_migrated:
+            entry.encrypted_notes = new_notes
+        db.commit()
+
+    # --- 审计日志 ---
+    ip = request.client.host if request.client else ""
+    log_action(db, current_user.id, "password.decrypt", "password", entry.id,
+               f"查看密码 {entry.title}", ip)
+
+    return PasswordDecryptResponse(
+        id=entry.id,
+        title=entry.title,
+        username=entry.username,
+        password=plaintext_password,
+        notes=plaintext_notes,
+        url=entry.url,
+        host=entry.host or "",
+        port=entry.port,
+        decrypt_token=new_token,
+    )
+
+
+@router.put("/{password_id}", response_model=PasswordResponse)
+def update_password(
+    password_id: int,
+    req: PasswordUpdate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if current_user.role == Role.ADMIN:
+        pass
+    elif entry.created_by == current_user.id and has_permission(current_user.role, "password.edit_team"):
+        pass
+    else:
+        raise HTTPException(status_code=403, detail="权限不足")
+    if req.title is not None:
+        entry.title = req.title
+    if req.category is not None:
+        entry.category = req.category
+    if req.username is not None:
+        entry.username = req.username
+    if req.password is not None:
+        entry.encrypted_password = encrypt(req.password)
+        entry.password_changed_at = datetime.now(timezone.utc)  # reset expiry timer
+    if req.notes is not None:
+        entry.encrypted_notes = encrypt(req.notes)
+    if req.url is not None:
+        entry.url = req.url
+    if req.host is not None:
+        entry.host = req.host
+    if req.port is not None:
+        entry.port = req.port
+    if req.expire_days is not None:
+        entry.expire_days = req.expire_days
+    db.commit()
+    db.refresh(entry)
+    log_action(db, current_user.id, "password.update", "password", entry.id,
+               f"更新密码 {entry.title}")
+    return _to_response(entry, db)
+
+
+@router.delete("/{password_id}")
+def delete_password(
+    password_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if current_user.role != Role.ADMIN and entry.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="权限不足")
+    log_action(db, current_user.id, "password.delete", "password", entry.id,
+               f"删除密码 {entry.title}")
+    db.delete(entry)
+    db.commit()
+    return {"message": "已删除"}
+
+
+# --- Server password verification ---
+
+@router.post("/{password_id}/verify-server")
+def verify_server_password(
+    password_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """SSH connect to the server to verify the password is still valid."""
+    import paramiko
+
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if entry.category != "server":
+        raise HTTPException(status_code=400, detail="仅支持服务器类型密码")
+    if not _can_access(current_user, entry, db):
+        raise HTTPException(status_code=403, detail="无权访问")
+    if not entry.host:
+        raise HTTPException(status_code=400, detail="未配置主机地址")
+
+    plaintext_password = decrypt(entry.encrypted_password)
+    port = entry.port or 22
+    username = entry.username or "root"
+
+    now = datetime.now(timezone.utc)
+    client = paramiko.SSHClient()
+    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    try:
+        client.connect(
+            hostname=entry.host,
+            port=port,
+            username=username,
+            password=plaintext_password,
+            timeout=10,
+            look_for_keys=False,
+            allow_agent=False,
+        )
+        client.close()
+        entry.verify_status = "valid"
+        entry.last_verified_at = now
+        db.commit()
+        log_action(db, current_user.id, "password.verify", "password", entry.id,
+                   f"验证服务器密码 {entry.title} - 有效")
+        return {"status": "valid", "message": "密码有效，连接成功"}
+    except paramiko.AuthenticationException:
+        entry.verify_status = "invalid"
+        entry.last_verified_at = now
+        db.commit()
+        log_action(db, current_user.id, "password.verify", "password", entry.id,
+                   f"验证服务器密码 {entry.title} - 已失效")
+        return {"status": "invalid", "message": "密码已失效，认证失败"}
+    except Exception as e:
+        entry.verify_status = "error"
+        entry.last_verified_at = now
+        db.commit()
+        return {"status": "error", "message": f"连接失败: {str(e)}"}
+    finally:
+        client.close()
+
+
+# --- Sharing ---
+
+@router.post("/{password_id}/share", response_model=ShareResponse)
+def share_password(
+    password_id: int,
+    req: ShareCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    if not has_permission(current_user.role, "password.share"):
+        raise HTTPException(status_code=403, detail="权限不足")
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if current_user.role != Role.ADMIN and entry.created_by != current_user.id:
+        raise HTTPException(status_code=403, detail="只能分享自己创建的密码")
+    existing = db.query(PasswordShare).filter(
+        PasswordShare.password_entry_id == password_id,
+        PasswordShare.shared_with_user_id == req.shared_with_user_id,
+    ).first()
+    if existing:
+        raise HTTPException(status_code=400, detail="已分享给该用户")
+    target_user = db.query(User).filter(User.id == req.shared_with_user_id).first()
+    if not target_user:
+        raise HTTPException(status_code=404, detail="目标用户不存在")
+    share = PasswordShare(
+        password_entry_id=password_id,
+        shared_with_user_id=req.shared_with_user_id,
+        shared_by=current_user.id,
+        permission=req.permission,
+    )
+    db.add(share)
+    db.commit()
+    db.refresh(share)
+    log_action(db, current_user.id, "password.share", "password", password_id,
+               f"分享密码 {entry.title} 给 {target_user.username}")
+    return ShareResponse(
+        id=share.id,
+        password_entry_id=share.password_entry_id,
+        shared_with_user_id=share.shared_with_user_id,
+        shared_with_username=target_user.username,
+        shared_by=share.shared_by,
+        permission=share.permission,
+        created_at=share.created_at,
+    )
+
+
+@router.get("/{password_id}/shares", response_model=List[ShareResponse])
+def list_shares(
+    password_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
+    if not entry:
+        raise HTTPException(status_code=404, detail="密码不存在")
+    if not _can_access(current_user, entry, db):
+        raise HTTPException(status_code=403, detail="无权访问")
+    shares = db.query(PasswordShare).filter(PasswordShare.password_entry_id == password_id).all()
+    result = []
+    for s in shares:
+        target = db.query(User).filter(User.id == s.shared_with_user_id).first()
+        result.append(ShareResponse(
+            id=s.id,
+            password_entry_id=s.password_entry_id,
+            shared_with_user_id=s.shared_with_user_id,
+            shared_with_username=target.username if target else "",
+            shared_by=s.shared_by,
+            permission=s.permission,
+            created_at=s.created_at,
+        ))
+    return result
+
+
+@router.delete("/{password_id}/share/{share_id}")
+def revoke_share(
+    password_id: int,
+    share_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    share = db.query(PasswordShare).filter(
+        PasswordShare.id == share_id, PasswordShare.password_entry_id == password_id
+    ).first()
+    if not share:
+        raise HTTPException(status_code=404, detail="分享记录不存在")
+    if current_user.role != Role.ADMIN and share.shared_by != current_user.id:
+        raise HTTPException(status_code=403, detail="权限不足")
+    db.delete(share)
+    db.commit()
+    return {"message": "已撤销"}

@@ -1,0 +1,69 @@
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from app.database import engine, Base, SessionLocal
+from app.models.user import User
+from app.models.team import Team
+from app.models.team_member import TeamMember
+from app.models.password_entry import PasswordEntry
+from app.models.password_share import PasswordShare
+from app.models.audit_log import AuditLog
+from app.services.auth_service import hash_password
+from app.core.security import Role
+from app.api import auth, users, teams, passwords, audit, ws
+
+
+logging.basicConfig(level=logging.INFO)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    Base.metadata.create_all(bind=engine)
+    _create_default_admin()
+    # Start background scheduler for auto SSH verification
+    from app.services.scheduler import scheduler_loop
+    task = asyncio.create_task(scheduler_loop())
+    yield
+    task.cancel()
+
+
+def _create_default_admin():
+    db = SessionLocal()
+    try:
+        existing = db.query(User).filter(User.username == "admin").first()
+        if not existing:
+            admin = User(
+                username="admin",
+                email="admin@example.com",
+                hashed_password=hash_password("admin123"),
+                role=Role.ADMIN,
+            )
+            db.add(admin)
+            db.commit()
+    finally:
+        db.close()
+
+
+app = FastAPI(title="团队协作密码平台", version="1.0.0", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth.router)
+app.include_router(users.router)
+app.include_router(teams.router)
+app.include_router(passwords.router)
+app.include_router(audit.router)
+app.include_router(ws.router)
+
+
+@app.get("/api/health")
+def health():
+    return {"status": "ok"}
