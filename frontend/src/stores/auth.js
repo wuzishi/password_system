@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
 import { login as loginApi } from '../api/auth'
+import { usePermissionStore } from './permission'
 
 export const useAuthStore = defineStore('auth', () => {
   const token = ref(localStorage.getItem('token') || '')
@@ -10,8 +11,6 @@ export const useAuthStore = defineStore('auth', () => {
 
   const isLoggedIn = computed(() => !!token.value)
   const isAdmin = computed(() => role.value === 'admin')
-  const isProduct = computed(() => role.value === 'product')
-  const isDeveloper = computed(() => role.value === 'developer')
 
   async function login(credentials) {
     const { data } = await loginApi(credentials)
@@ -23,6 +22,9 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.setItem('username', data.username)
     localStorage.setItem('role', data.role)
     localStorage.setItem('userId', data.user_id)
+    // Load permissions after login
+    const permStore = usePermissionStore()
+    await permStore.load()
   }
 
   function logout() {
@@ -34,7 +36,9 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem('username')
     localStorage.removeItem('role')
     localStorage.removeItem('userId')
+    const permStore = usePermissionStore()
+    permStore.clear()
   }
 
-  return { token, username, role, userId, isLoggedIn, isAdmin, isProduct, isDeveloper, login, logout }
+  return { token, username, role, userId, isLoggedIn, isAdmin, login, logout }
 })

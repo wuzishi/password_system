@@ -12,9 +12,10 @@ from app.models.password_share import PasswordShare
 from app.models.audit_log import AuditLog
 from app.models.approval import ApprovalRequest
 from app.models.invitation import Invitation
+from app.models.role_permission import RolePermission, ALL_PERMISSIONS, DEFAULT_PERMISSIONS
 from app.services.auth_service import hash_password
 from app.core.security import Role
-from app.api import auth, users, teams, passwords, audit, ws, approvals
+from app.api import auth, users, teams, passwords, audit, ws, approvals, permissions
 
 
 logging.basicConfig(level=logging.INFO)
@@ -24,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     _create_default_admin()
-    # Start background scheduler for auto SSH verification
+    _init_default_permissions()
     from app.services.scheduler import scheduler_loop
     task = asyncio.create_task(scheduler_loop())
     yield
@@ -48,6 +49,26 @@ def _create_default_admin():
         db.close()
 
 
+def _init_default_permissions():
+    db = SessionLocal()
+    try:
+        existing_count = db.query(RolePermission).count()
+        if existing_count > 0:
+            return  # Already initialized
+        for role, perm_keys in DEFAULT_PERMISSIONS.items():
+            for key, _ in ALL_PERMISSIONS:
+                perm = RolePermission(
+                    role=role,
+                    permission_key=key,
+                    enabled=(key in perm_keys),
+                )
+                db.add(perm)
+        db.commit()
+        logging.info("Default permissions initialized")
+    finally:
+        db.close()
+
+
 app = FastAPI(title="团队协作密码平台", version="1.0.0", lifespan=lifespan)
 
 app.add_middleware(
@@ -65,6 +86,7 @@ app.include_router(passwords.router)
 app.include_router(audit.router)
 app.include_router(ws.router)
 app.include_router(approvals.router)
+app.include_router(permissions.router)
 
 
 @app.get("/api/health")

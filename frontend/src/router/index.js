@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { usePermissionStore } from '../stores/permission'
 
 const routes = [
   {
@@ -22,43 +23,55 @@ const routes = [
         path: 'dashboard',
         name: 'Dashboard',
         component: () => import('../views/DashboardView.vue'),
+        meta: { permKey: 'page.dashboard' },
       },
       {
         path: 'passwords',
         name: 'Passwords',
         component: () => import('../views/PasswordVaultView.vue'),
+        meta: { permKey: 'page.passwords' },
       },
       {
         path: 'teams',
         name: 'Teams',
         component: () => import('../views/TeamsView.vue'),
+        meta: { permKey: 'page.teams' },
       },
       {
         path: 'teams/:id',
         name: 'TeamDetail',
         component: () => import('../views/TeamDetailView.vue'),
+        meta: { permKey: 'page.teams' },
       },
       {
         path: 'users',
         name: 'Users',
         component: () => import('../views/UsersManageView.vue'),
-        meta: { requiredRole: 'admin' },
+        meta: { permKey: 'page.users' },
       },
       {
         path: 'audit',
         name: 'Audit',
         component: () => import('../views/AuditLogView.vue'),
-        meta: { requiredRole: 'admin' },
+        meta: { permKey: 'page.audit' },
       },
       {
         path: 'approvals',
         name: 'Approvals',
         component: () => import('../views/ApprovalsView.vue'),
+        meta: { permKey: 'page.approvals' },
       },
       {
         path: 'servers',
         name: 'Servers',
         component: () => import('../views/ServersView.vue'),
+        meta: { permKey: 'page.servers' },
+      },
+      {
+        path: 'permissions',
+        name: 'Permissions',
+        component: () => import('../views/PermissionsView.vue'),
+        meta: { permKey: 'page.permissions' },
       },
       {
         path: 'profile',
@@ -80,15 +93,38 @@ const router = createRouter({
   routes,
 })
 
-router.beforeEach((to, from, next) => {
+router.beforeEach(async (to, from, next) => {
   const auth = useAuthStore()
-  if (to.matched.some((r) => r.meta.requiresAuth) && !auth.isLoggedIn) {
-    next('/login')
-  } else if (to.meta.requiredRole && auth.role !== to.meta.requiredRole) {
-    next('/dashboard')
-  } else {
+  const perm = usePermissionStore()
+
+  // Public pages
+  if (!to.matched.some((r) => r.meta.requiresAuth) && !to.meta.permKey) {
     next()
+    return
   }
+
+  // Not logged in
+  if (!auth.isLoggedIn) {
+    next('/login')
+    return
+  }
+
+  // Load permissions if not yet loaded
+  if (!perm.loaded) {
+    await perm.load()
+  }
+
+  // Check page permission
+  if (to.meta.permKey && !perm.has(to.meta.permKey)) {
+    // Redirect to first accessible page
+    const fallback = ['/dashboard', '/passwords', '/servers', '/approvals'].find(
+      (p) => perm.has(`page.${p.slice(1)}`)
+    )
+    next(fallback || '/profile')
+    return
+  }
+
+  next()
 })
 
 export default router

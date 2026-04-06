@@ -13,36 +13,40 @@
         :collapse="isCollapse"
         :collapse-transition="false"
       >
-        <el-menu-item index="/dashboard">
+        <el-menu-item v-if="perm.hasPage('dashboard')" index="/dashboard">
           <el-icon><DataBoard /></el-icon>
           <template #title>工作台</template>
         </el-menu-item>
-        <el-menu-item index="/passwords">
+        <el-menu-item v-if="perm.hasPage('passwords')" index="/passwords">
           <el-icon><Key /></el-icon>
           <template #title>密码库</template>
         </el-menu-item>
-        <el-menu-item index="/servers">
+        <el-menu-item v-if="perm.hasPage('servers')" index="/servers">
           <el-icon><Monitor /></el-icon>
           <template #title>服务器</template>
         </el-menu-item>
-        <el-menu-item index="/teams">
+        <el-menu-item v-if="perm.hasPage('teams')" index="/teams">
           <el-icon><UserFilled /></el-icon>
           <template #title>团队</template>
         </el-menu-item>
-        <el-menu-item index="/approvals">
+        <el-menu-item v-if="perm.hasPage('approvals')" index="/approvals">
           <el-icon><Stamp /></el-icon>
           <template #title>
             审批
             <span v-if="pendingCount > 0" class="badge">{{ pendingCount }}</span>
           </template>
         </el-menu-item>
-        <el-menu-item v-if="auth.isAdmin" index="/users">
+        <el-menu-item v-if="perm.hasPage('users')" index="/users">
           <el-icon><User /></el-icon>
           <template #title>用户</template>
         </el-menu-item>
-        <el-menu-item v-if="auth.isAdmin" index="/audit">
+        <el-menu-item v-if="perm.hasPage('audit')" index="/audit">
           <el-icon><Document /></el-icon>
           <template #title>审计</template>
+        </el-menu-item>
+        <el-menu-item v-if="perm.hasPage('permissions')" index="/permissions">
+          <el-icon><Setting /></el-icon>
+          <template #title>权限</template>
         </el-menu-item>
       </el-menu>
 
@@ -99,11 +103,13 @@ import { ref, computed, onMounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { useThemeStore } from '../../stores/theme'
+import { usePermissionStore } from '../../stores/permission'
 import { ROLES } from '../../utils/constants'
 import { getPendingCount } from '../../api/approvals'
 
 const auth = useAuthStore()
 const themeStore = useThemeStore()
+const perm = usePermissionStore()
 const router = useRouter()
 const route = useRoute()
 const isCollapse = ref(false)
