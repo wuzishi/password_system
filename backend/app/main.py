@@ -11,6 +11,7 @@ from app.models.password_entry import PasswordEntry
 from app.models.password_share import PasswordShare
 from app.models.audit_log import AuditLog
 from app.models.approval import ApprovalRequest
+from app.models.invitation import Invitation
 from app.services.auth_service import hash_password
 from app.core.security import Role
 from app.api import auth, users, teams, passwords, audit, ws, approvals

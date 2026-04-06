@@ -12,6 +12,13 @@ class Settings(BaseSettings):
     AES_KEY: str = ""
     DECRYPT_TOKEN_MINUTES: int = 5
     VERIFY_INTERVAL_HOURS: int = 24
+    SMTP_HOST: str = ""
+    SMTP_PORT: int = 465
+    SMTP_USER: str = ""
+    SMTP_PASSWORD: str = ""
+    SMTP_USE_SSL: bool = True
+    SITE_URL: str = "http://localhost:3000"
+    INVITE_EXPIRE_HOURS: int = 72
 
     class Config:
         env_file = ".env"

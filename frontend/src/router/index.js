@@ -8,6 +8,11 @@ const routes = [
     component: () => import('../views/LoginView.vue'),
   },
   {
+    path: '/accept-invite',
+    name: 'AcceptInvite',
+    component: () => import('../views/AcceptInviteView.vue'),
+  },
+  {
     path: '/',
     component: () => import('../components/layout/AppLayout.vue'),
     redirect: '/dashboard',
