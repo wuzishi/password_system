@@ -623,12 +623,23 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
         channel = client.invoke_shell(term="xterm-256color", width=120, height=40)
         channel.settimeout(0.1)
 
-        # 发送 init 消息给前端（含 cwd 检测 nonce）
-        cwd_nonce = secrets.token_hex(4)
-        await websocket.send_text(json.dumps({"init": {"cwd_nonce": cwd_nonce}}))
+        # 通知前端初始化完成
+        await websocket.send_text(json.dumps({"init": True}))
 
         output_queue = asyncio.Queue()
         stop_event = threading.Event()
+
+        # cwd 检测：通过独立 exec_command 获取 pwd，不污染 PTY
+        async def detect_cwd():
+            """每次用户按回车后，用独立通道获取 pwd 并推送给前端。"""
+            await asyncio.sleep(0.3)  # 等命令执行完
+            try:
+                _, stdout, _ = client.exec_command("pwd", timeout=5)
+                cwd = stdout.read().decode().strip()
+                if cwd:
+                    await websocket.send_text(json.dumps({"cwd": cwd}))
+            except Exception:
+                pass
 
         def ssh_reader():
             while not stop_event.is_set():
@@ -673,14 +684,10 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
                         except Exception:
                             pass
                     else:
-                        # 限制单次输入长度，防止注入超大数据
                         channel.send(text[:4096])
-                        # 检测回车：注入隐藏的 pwd 命令用于 cwd 同步
+                        # 回车后异步检测 cwd（独立通道，不污染终端）
                         if "\r" in text or "\n" in text:
-                            # 延迟注入让原命令先执行
-                            await asyncio.sleep(0.05)
-                            marker_cmd = f' echo "~~CWD{cwd_nonce}~~$(pwd)~~CWDEND~~"\n'
-                            channel.send(marker_cmd)
+                            asyncio.create_task(detect_cwd())
                 elif "bytes" in msg:
                     channel.send(msg["bytes"][:4096])
         except WebSocketDisconnect:

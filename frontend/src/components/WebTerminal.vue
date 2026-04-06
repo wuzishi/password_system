@@ -19,67 +19,8 @@ let term = null
 let fitAddon = null
 let ws = null
 let resizeObserver = null
+let initReceived = false
 
-// cwd 检测
-let cwdNonce = null
-let markerRe = null
-let outputBuffer = ''
-let flushTimer = null
-
-function flushBuffer() {
-  if (outputBuffer && term) {
-    term.write(outputBuffer)
-    outputBuffer = ''
-  }
-}
-
-function scheduleFlush() {
-  if (flushTimer) clearTimeout(flushTimer)
-  flushTimer = setTimeout(flushBuffer, 150)
-}
-
-function processOutput(raw) {
-  if (!cwdNonce || !markerRe) {
-    // 尚未收到 nonce，直接写入
-    term.write(raw)
-    return
-  }
-
-  outputBuffer += raw
-
-  // 检查完整标记
-  const match = outputBuffer.match(markerRe)
-  if (match) {
-    const cwd = match[1].trim()
-    if (cwd) emit('cwd-changed', cwd)
-    // 剥离标记行（含 echo 命令本身和输出）
-    outputBuffer = outputBuffer.replace(new RegExp(`[^\\r\\n]*~~CWD${cwdNonce}~~[^\\r\\n]*~~CWDEND~~[^\\r\\n]*`, 'g'), '')
-    // 也剥离 echo 命令本身（前导空格 + echo）
-    outputBuffer = outputBuffer.replace(new RegExp(`[^\\r\\n]* echo "~~CWD${cwdNonce}~~[^"]*~~CWDEND~~"[^\\r\\n]*`, 'g'), '')
-  }
-
-  // 如果缓冲区末尾可能是标记的一部分，保留
-  const markerPrefix = `~~CWD`
-  const tailKeep = 60  // 标记最大长度
-  if (outputBuffer.length > tailKeep) {
-    const tail = outputBuffer.slice(-tailKeep)
-    if (tail.includes(markerPrefix)) {
-      // 可能有不完整标记，只输出安全部分
-      const safeLen = outputBuffer.length - tailKeep
-      if (safeLen > 0) {
-        term.write(outputBuffer.substring(0, safeLen))
-        outputBuffer = outputBuffer.substring(safeLen)
-      }
-      scheduleFlush()
-      return
-    }
-  }
-
-  // 无标记嫌疑，全部输出
-  flushBuffer()
-}
-
-// 暴露 sendCommand 给父组件
 function sendCommand(cmd) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(cmd + '\r')
@@ -113,7 +54,6 @@ onMounted(() => {
 
   term.writeln('正在连接服务器...\r\n')
 
-  // Connect WebSocket
   try {
     ws = new WebSocket(props.wsUrl)
     ws.binaryType = 'arraybuffer'
@@ -123,61 +63,55 @@ onMounted(() => {
     return
   }
 
-  let initReceived = false
-
   ws.onopen = () => {
     emit('connected')
     term.clear()
     try {
-      const dims = { cols: term.cols, rows: term.rows }
-      ws.send(JSON.stringify({ resize: dims }))
+      ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } }))
     } catch {}
   }
 
   ws.onmessage = (e) => {
-    // 第一条消息是 init JSON
-    if (!initReceived && typeof e.data === 'string') {
+    // 文本消息：可能是 JSON 控制消息（init / cwd）
+    if (typeof e.data === 'string') {
       try {
         const msg = JSON.parse(e.data)
-        if (msg.init && msg.init.cwd_nonce) {
-          cwdNonce = msg.init.cwd_nonce
-          markerRe = new RegExp(`~~CWD${cwdNonce}~~(.+?)~~CWDEND~~`)
+        if (msg.init) {
           initReceived = true
           return
         }
+        if (msg.cwd) {
+          emit('cwd-changed', msg.cwd)
+          return
+        }
       } catch {}
-      initReceived = true
+      // 非 JSON 文本，写入终端
+      term.write(e.data)
+      return
     }
 
-    // 正常终端数据
+    // 二进制消息：终端输出
     if (e.data instanceof ArrayBuffer) {
-      const text = new TextDecoder().decode(e.data)
-      processOutput(text)
-    } else {
-      processOutput(e.data)
+      term.write(new Uint8Array(e.data))
     }
   }
 
   ws.onclose = () => {
-    flushBuffer()
     term.writeln('\r\n\r\n--- 连接已断开 ---')
     emit('disconnected')
   }
 
   ws.onerror = () => {
-    flushBuffer()
     term.writeln('\r\n--- 连接错误 ---')
     emit('error')
   }
 
-  // Send keystrokes to server
   term.onData((data) => {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(data)
     }
   })
 
-  // Handle resize
   resizeObserver = new ResizeObserver(() => {
     try {
       fitAddon.fit()
@@ -190,7 +124,6 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  if (flushTimer) clearTimeout(flushTimer)
   if (resizeObserver) resizeObserver.disconnect()
   if (ws) ws.close()
   if (term) term.dispose()
