@@ -56,16 +56,6 @@ def create_approval(
     if req.request_type == "share" and not req.share_target_user_id:
         raise HTTPException(status_code=400, detail="分享审批需要指定目标用户")
 
-    # Check for existing pending request
-    existing = db.query(ApprovalRequest).filter(
-        ApprovalRequest.requester_id == current_user.id,
-        ApprovalRequest.password_entry_id == req.password_entry_id,
-        ApprovalRequest.request_type == req.request_type,
-        ApprovalRequest.status == "pending",
-    ).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="已有待审批的请求")
-
     approval = ApprovalRequest(
         requester_id=current_user.id,
         password_entry_id=req.password_entry_id,
