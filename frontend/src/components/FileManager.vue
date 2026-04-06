@@ -87,13 +87,14 @@
 </template>
 
 <script setup>
-import { ref, reactive, computed, onMounted } from 'vue'
+import { ref, reactive, computed, watch, onMounted } from 'vue'
 import { listFiles, mkdir, renameFile, deleteFile, uploadFile, downloadFile } from '../api/sftp'
 import FileContextMenu from './FileContextMenu.vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 const props = defineProps({
   passwordId: { type: [Number, String], required: true },
+  cwd: { type: String, default: '' },
 })
 
 const emit = defineEmits(['cd'])
@@ -115,6 +116,13 @@ const pathSegments = computed(() => {
     name,
     fullPath: '/' + parts.slice(0, i + 1).join('/'),
   }))
+})
+
+// 终端 cwd 变化时自动同步
+watch(() => props.cwd, (val) => {
+  if (val && val !== currentPath.value) {
+    loadDirectory(val)
+  }
 })
 
 function navigate(path) {
@@ -283,21 +291,6 @@ function formatSize(bytes) {
   if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(1) + ' M'
   return (bytes / 1024 / 1024 / 1024).toFixed(1) + ' G'
 }
-
-// 暴露给父组件（TerminalView 检测到 cd 后调用）
-function navigateTo(path) {
-  if (path === '~') path = '/root'  // 常见默认
-  loadDirectory(path)
-}
-function navigateRelative(relPath) {
-  const base = currentPath.value === '/' ? '' : currentPath.value
-  loadDirectory(base + '/' + relPath)
-}
-function refresh() {
-  loadDirectory(currentPath.value)
-}
-
-defineExpose({ navigateTo, navigateRelative, goUp, refresh })
 
 onMounted(() => {
   loadDirectory('/')

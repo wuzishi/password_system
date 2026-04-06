@@ -623,6 +623,21 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
         channel = client.invoke_shell(term="xterm-256color", width=120, height=40)
         channel.settimeout(0.1)
 
+        # 获取 shell PID：发送 echo $$ 并从输出中解析
+        shell_pid = None
+        channel.send("echo $$\n")
+        await asyncio.sleep(0.5)
+        pid_buf = b""
+        while channel.recv_ready():
+            pid_buf += channel.recv(4096)
+        # 从输出中提取纯数字行（就是 PID）
+        for line in pid_buf.decode("utf-8", errors="replace").split("\n"):
+            stripped = line.strip()
+            if stripped.isdigit():
+                shell_pid = stripped
+                break
+        logger.info(f"Terminal shell PID: {shell_pid}")
+
         # 通知前端初始化完成
         await websocket.send_text(json.dumps({"init": True}))
 
@@ -656,6 +671,26 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
 
         send_task = asyncio.create_task(send_output())
 
+        # cwd 轮询：每 2 秒通过 procfs 读取 shell 进程的实际工作目录
+        last_cwd = [None]
+
+        async def cwd_poller():
+            if not shell_pid:
+                return
+            while not stop_event.is_set():
+                await asyncio.sleep(2)
+                try:
+                    cmd = f"readlink /proc/{shell_pid}/cwd"
+                    _, stdout, _ = client.exec_command(cmd, timeout=3)
+                    cwd = stdout.read().decode().strip()
+                    if cwd and cwd != last_cwd[0]:
+                        last_cwd[0] = cwd
+                        await websocket.send_text(json.dumps({"cwd": cwd}))
+                except Exception:
+                    pass
+
+        cwd_task = asyncio.create_task(cwd_poller())
+
         try:
             while True:
                 msg = await websocket.receive()
@@ -679,6 +714,7 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
             pass
         finally:
             stop_event.set()
+            cwd_task.cancel()
             send_task.cancel()
             try:
                 reader_thread.join(timeout=2)

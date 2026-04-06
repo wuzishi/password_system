@@ -97,6 +97,7 @@ def _format_mtime(ts: float) -> str:
 async def list_directory(
     password_id: int,
     path: str = Query("/", max_length=4096),
+    limit: int = Query(60, ge=1, le=500),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -116,9 +117,9 @@ async def list_directory(
                     mtime=_format_mtime(attr.st_mtime) if attr.st_mtime else "",
                     permissions=_format_permissions(attr.st_mode) if attr.st_mode else "",
                 ))
-            # 目录在前，按名称排序
+            # 目录在前，按名称排序，限制数量
             items.sort(key=lambda x: (not x.is_dir, x.name.lower()))
-            return items
+            return items[:limit]
         finally:
             sftp.close()
             client.close()
