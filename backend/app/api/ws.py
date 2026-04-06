@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 import string
@@ -243,26 +244,39 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
             return
 
         channel = client.invoke_shell(term="xterm-256color", width=120, height=40)
-        channel.setblocking(0)
+        channel.settimeout(0.1)
 
-        # Read SSH output and send to browser
+        # Read SSH output in a thread, push to queue
+        output_queue = asyncio.Queue()
         stop_event = threading.Event()
 
-        async def read_ssh():
+        def ssh_reader():
             while not stop_event.is_set():
                 try:
                     if channel.recv_ready():
                         data = channel.recv(4096)
                         if data:
-                            await websocket.send_bytes(data)
+                            output_queue.put_nowait(data)
                     else:
-                        import asyncio
-                        await asyncio.sleep(0.02)
-                except:
+                        time.sleep(0.02)
+                except Exception:
                     break
 
-        import asyncio
-        read_task = asyncio.create_task(read_ssh())
+        reader_thread = threading.Thread(target=ssh_reader, daemon=True)
+        reader_thread.start()
+
+        # Forward queue to websocket
+        async def send_output():
+            while not stop_event.is_set():
+                try:
+                    data = await asyncio.wait_for(output_queue.get(), timeout=0.1)
+                    await websocket.send_bytes(data)
+                except asyncio.TimeoutError:
+                    continue
+                except Exception:
+                    break
+
+        send_task = asyncio.create_task(send_output())
 
         # Read browser input and send to SSH
         try:
@@ -272,7 +286,6 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
                     break
                 if "text" in msg:
                     text = msg["text"]
-                    # Handle resize
                     if text.startswith('{"resize":'):
                         try:
                             data = json.loads(text)
@@ -280,7 +293,7 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
                                 width=data["resize"]["cols"],
                                 height=data["resize"]["rows"],
                             )
-                        except:
+                        except Exception:
                             pass
                     else:
                         channel.send(text)
@@ -290,7 +303,7 @@ async def ws_terminal(websocket: WebSocket, password_id: int, token: str = ""):
             pass
         finally:
             stop_event.set()
-            read_task.cancel()
+            send_task.cancel()
             channel.close()
             client.close()
 
