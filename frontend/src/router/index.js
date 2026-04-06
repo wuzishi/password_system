@@ -46,6 +46,11 @@ const routes = [
         meta: { requiredRole: 'admin' },
       },
       {
+        path: 'approvals',
+        name: 'Approvals',
+        component: () => import('../views/ApprovalsView.vue'),
+      },
+      {
         path: 'servers',
         name: 'Servers',
         component: () => import('../views/ServersView.vue'),

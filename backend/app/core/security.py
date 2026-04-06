@@ -7,6 +7,13 @@ class Role(str, enum.Enum):
     DEVELOPER = "developer"
 
 
+class SecurityLevel(str, enum.Enum):
+    PERSONAL = "personal"  # 仅本人可见，Admin也无权
+    HIGH = "high"          # 只读5分钟，需Admin审批
+    MEDIUM = "medium"      # Admin赋权，用户可读写，分享需审批
+    LOW = "low"            # 自由共享
+
+
 # Permission matrix
 PERMISSIONS = {
     "user.manage": [Role.ADMIN],

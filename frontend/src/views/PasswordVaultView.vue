@@ -54,6 +54,14 @@
         </template>
       </el-table-column>
       <el-table-column prop="title" label="标题" min-width="130" />
+      <el-table-column label="安全等级" width="95">
+        <template #default="{ row }">
+          <el-tag v-if="row.security_level === 'personal'" type="info" size="small" effect="dark" style="background: #9b59b6; border-color: #9b59b6">个人</el-tag>
+          <el-tag v-else-if="row.security_level === 'high'" type="danger" size="small" effect="dark">高</el-tag>
+          <el-tag v-else-if="row.security_level === 'medium'" type="warning" size="small" effect="dark">中</el-tag>
+          <el-tag v-else type="success" size="small">低</el-tag>
+        </template>
+      </el-table-column>
       <el-table-column prop="username" label="用户名" min-width="110" />
       <el-table-column label="密码" width="200">
         <template #default="{ row }">
@@ -130,6 +138,22 @@
             <el-radio value="website">网站密码</el-radio>
             <el-radio value="server">服务器密码</el-radio>
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="安全等级" prop="security_level">
+          <el-radio-group v-model="form.security_level" :disabled="!!editingId">
+            <el-radio-button value="personal">
+              <el-icon style="vertical-align: -2px"><Lock /></el-icon> 个人
+            </el-radio-button>
+            <el-radio-button value="high">高安全</el-radio-button>
+            <el-radio-button value="medium">中安全</el-radio-button>
+            <el-radio-button value="low">低安全</el-radio-button>
+          </el-radio-group>
+          <div style="font-size: 12px; color: #999; margin-top: 4px">
+            <span v-if="form.security_level === 'personal'">仅本人可见，包括管理员也无法查看</span>
+            <span v-else-if="form.security_level === 'high'">查看需Admin审批，只读5分钟时效</span>
+            <span v-else-if="form.security_level === 'medium'">Admin赋权后可读写，分享需审批</span>
+            <span v-else>团队内自由共享</span>
+          </div>
         </el-form-item>
         <el-form-item label="标题" prop="title">
           <el-input v-model="form.title" :placeholder="form.category === 'server' ? '如: 生产服务器-web01' : '如: GitHub'" />
@@ -292,6 +316,7 @@ import { ref, reactive, computed, onMounted, watch, nextTick } from 'vue'
 import { useAuthStore } from '../stores/auth'
 import { useDecryptStore } from '../stores/decrypt'
 import { getPasswords, createPassword, updatePassword, deletePassword, decryptPassword, sharePassword, getShares, revokeShare, verifyServerPassword } from '../api/passwords'
+import { createApproval, checkAccess } from '../api/approvals'
 import { getTeams } from '../api/teams'
 import { getAllUsers } from '../api/users'
 import { ElMessage } from 'element-plus'
@@ -320,7 +345,7 @@ const formRef = ref()
 const form = reactive({
   title: '', category: 'website', username: '', password: '',
   url: '', host: '', port: 22, notes: '',
-  is_personal: false, team_id: null, expire_days: 0,
+  is_personal: false, team_id: null, expire_days: 0, security_level: 'low',
 })
 const formRules = {
   title: [{ required: true, message: '请输入标题', trigger: 'blur' }],
@@ -403,7 +428,7 @@ function executePendingAction(data) {
       username: data.username, password: data.password,
       url: data.url, host: data.host || '', port: data.port || 22,
       notes: data.notes, is_personal: row.is_personal, team_id: row.team_id,
-      expire_days: row.expire_days || 0,
+      expire_days: row.expire_days || 0, security_level: row.security_level || 'low',
     })
     dialogVisible.value = true
   }
@@ -461,7 +486,7 @@ async function openEdit(row) {
         username: data.username, password: data.password,
         url: data.url, host: data.host || '', port: data.port || 22,
         notes: data.notes, is_personal: row.is_personal, team_id: row.team_id,
-        expire_days: row.expire_days || 0,
+        expire_days: row.expire_days || 0, security_level: row.security_level || 'low',
       })
       dialogVisible.value = true
       return
@@ -499,11 +524,33 @@ async function handleDelete(id) {
   loadList()
 }
 
+async function requireApproval(row, type) {
+  if (row.security_level === 'high' && type === 'view') {
+    const { data } = await checkAccess(row.id)
+    if (data.has_access) return true
+    if (data.pending) { ElMessage.warning('审批申请已提交，等待Admin审批'); return false }
+    try {
+      await createApproval({ password_entry_id: row.id, request_type: 'view', reason: '申请查看高安全密码' })
+      ElMessage.success('审批申请已提交，请等待Admin审批')
+    } catch {}
+    return false
+  }
+  if (row.security_level === 'medium' && type === 'share') {
+    ElMessage.warning('中安全密码分享需要Admin审批，请到审批管理发起申请')
+    return false
+  }
+  return true
+}
+
 async function toggleReveal(row) {
   if (revealedMap.value[row.id]) {
     delete revealedMap.value[row.id]
     revealedMap.value = { ...revealedMap.value }
     return
+  }
+  if (row.security_level === 'high') {
+    const allowed = await requireApproval(row, 'view')
+    if (!allowed) return
   }
   if (decryptStore.isValid) {
     const data = await callDecryptWithToken(row)
@@ -513,6 +560,10 @@ async function toggleReveal(row) {
 }
 
 async function copyPassword(row) {
+  if (row.security_level === 'high') {
+    const allowed = await requireApproval(row, 'view')
+    if (!allowed) return
+  }
   if (decryptStore.isValid) {
     const data = await callDecryptWithToken(row)
     if (data) { await navigator.clipboard.writeText(data.password); ElMessage.success('已复制到剪贴板'); return }

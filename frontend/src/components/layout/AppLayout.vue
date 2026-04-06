@@ -30,6 +30,13 @@
           <el-icon><UserFilled /></el-icon>
           <template #title>团队管理</template>
         </el-menu-item>
+        <el-menu-item index="/approvals">
+          <el-icon><Stamp /></el-icon>
+          <template #title>
+            审批管理
+            <el-badge v-if="pendingCount > 0" :value="pendingCount" style="margin-left: 6px" />
+          </template>
+        </el-menu-item>
         <el-menu-item v-if="auth.isAdmin" index="/users">
           <el-icon><User /></el-icon>
           <template #title>用户管理</template>
@@ -71,14 +78,28 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAuthStore } from '../../stores/auth'
 import { ROLES } from '../../utils/constants'
+import { getPendingCount } from '../../api/approvals'
 
 const auth = useAuthStore()
 const router = useRouter()
 const isCollapse = ref(false)
+const pendingCount = ref(0)
+
+async function loadPendingCount() {
+  try {
+    const { data } = await getPendingCount()
+    pendingCount.value = data.count
+  } catch {}
+}
+
+onMounted(() => {
+  loadPendingCount()
+  setInterval(loadPendingCount, 30000)
+})
 
 const roleTag = computed(() => ROLES[auth.role] || { label: auth.role, type: 'info' })
 

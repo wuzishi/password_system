@@ -10,9 +10,10 @@ from app.models.team_member import TeamMember
 from app.models.password_entry import PasswordEntry
 from app.models.password_share import PasswordShare
 from app.models.audit_log import AuditLog
+from app.models.approval import ApprovalRequest
 from app.services.auth_service import hash_password
 from app.core.security import Role
-from app.api import auth, users, teams, passwords, audit, ws
+from app.api import auth, users, teams, passwords, audit, ws, approvals
 
 
 logging.basicConfig(level=logging.INFO)
@@ -62,6 +63,7 @@ app.include_router(teams.router)
 app.include_router(passwords.router)
 app.include_router(audit.router)
 app.include_router(ws.router)
+app.include_router(approvals.router)
 
 
 @app.get("/api/health")

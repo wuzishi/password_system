@@ -14,6 +14,7 @@ class PasswordCreate(BaseModel):
     port: Optional[int] = None
     team_id: Optional[int] = None
     is_personal: bool = False
+    security_level: str = "low"  # personal/high/medium/low
     expire_days: int = 0  # 0=never, 90=3 months
 
 
@@ -27,12 +28,14 @@ class PasswordUpdate(BaseModel):
     host: Optional[str] = None
     port: Optional[int] = None
     expire_days: Optional[int] = None
+    security_level: Optional[str] = None
 
 
 class PasswordResponse(BaseModel):
     id: int
     title: str
     category: str
+    security_level: str
     username: str
     url: str
     host: str

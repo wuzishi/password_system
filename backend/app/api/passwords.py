@@ -13,31 +13,83 @@ from app.schemas.password import (
 )
 from app.services.crypto_service import encrypt, decrypt, migrate_if_needed
 from app.services.auth_service import verify_password, create_decrypt_token, verify_decrypt_token
+from app.models.approval import ApprovalRequest
 from app.services.audit_service import log_action
 from app.api.deps import get_current_user
-from app.core.security import Role, has_permission
+from app.core.security import Role, SecurityLevel, has_permission
 
 router = APIRouter(prefix="/api/passwords", tags=["密码管理"])
 
 
 def _can_access(user: User, entry: PasswordEntry, db: Session) -> bool:
-    if user.role == Role.ADMIN:
-        return True
+    """Check if user can see this entry in the list (not decrypt)."""
+    level = entry.security_level or "low"
+
+    # Personal: only creator, nobody else including admin
+    if level == "personal":
+        return entry.created_by == user.id
+
+    # Creator always has access
     if entry.created_by == user.id:
         return True
-    if entry.is_personal:
-        return False
+
+    # Admin has access to all non-personal entries
+    if user.role == Role.ADMIN:
+        return True
+
+    # High: team members can see it in list (but decrypt requires approval)
+    # Medium: team members + shared users
+    # Low: team members + shared users
     if entry.team_id:
         is_member = db.query(TeamMember).filter(
             TeamMember.team_id == entry.team_id, TeamMember.user_id == user.id
         ).first()
         if is_member:
             return True
+
     shared = db.query(PasswordShare).filter(
         PasswordShare.password_entry_id == entry.id,
         PasswordShare.shared_with_user_id == user.id,
     ).first()
     return shared is not None
+
+
+def _can_decrypt(user: User, entry: PasswordEntry, db: Session) -> tuple[bool, str]:
+    """Check if user can decrypt this password. Returns (allowed, reason)."""
+    level = entry.security_level or "low"
+
+    # Personal: only creator
+    if level == "personal":
+        if entry.created_by == user.id:
+            return True, ""
+        return False, "个人密码仅本人可查看"
+
+    # Creator always ok
+    if entry.created_by == user.id:
+        return True, ""
+
+    # High: needs approved & unexpired approval
+    if level == "high":
+        if user.role == Role.ADMIN:
+            return True, ""
+        now = datetime.now(timezone.utc)
+        approval = db.query(ApprovalRequest).filter(
+            ApprovalRequest.requester_id == user.id,
+            ApprovalRequest.password_entry_id == entry.id,
+            ApprovalRequest.request_type == "view",
+            ApprovalRequest.status == "approved",
+            ApprovalRequest.expires_at > now,
+        ).first()
+        if approval:
+            return True, ""
+        return False, "高安全密码需要Admin审批后才能查看"
+
+    # Medium/Low: standard access check
+    if user.role == Role.ADMIN:
+        return True, ""
+    if not _can_access(user, entry, db):
+        return False, "无权访问"
+    return True, ""
 
 
 def _calc_expire_status(entry: PasswordEntry) -> tuple[str, int | None]:
@@ -69,6 +121,7 @@ def _to_response(entry: PasswordEntry, db: Session) -> dict:
         "id": entry.id,
         "title": entry.title,
         "category": entry.category or "website",
+        "security_level": entry.security_level or "low",
         "username": entry.username,
         "url": entry.url,
         "host": entry.host or "",
@@ -158,9 +211,13 @@ def create_password(
     expire_days = req.expire_days
     if req.category == "server" and expire_days == 0:
         expire_days = 90
+    sl = req.security_level
+    if sl == "personal":
+        req.is_personal = True
     entry = PasswordEntry(
         title=req.title,
         category=req.category,
+        security_level=sl,
         username=req.username,
         encrypted_password=encrypt(req.password),
         encrypted_notes=encrypt(req.notes) if req.notes else "",
@@ -201,12 +258,13 @@ def decrypt_password(
     else:
         raise HTTPException(status_code=400, detail="需要密码验证")
 
-    # --- 访问控制 ---
+    # --- 访问控制（按安全等级） ---
     entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="密码不存在")
-    if not _can_access(current_user, entry, db):
-        raise HTTPException(status_code=403, detail="无权访问")
+    can, reason = _can_decrypt(current_user, entry, db)
+    if not can:
+        raise HTTPException(status_code=403, detail=reason)
 
     # --- 解密 + 懒迁移 ---
     plaintext_password = decrypt(entry.encrypted_password)
@@ -274,6 +332,9 @@ def update_password(
         entry.port = req.port
     if req.expire_days is not None:
         entry.expire_days = req.expire_days
+    if req.security_level is not None:
+        entry.security_level = req.security_level
+        entry.is_personal = (req.security_level == "personal")
     db.commit()
     db.refresh(entry)
     log_action(db, current_user.id, "password.update", "password", entry.id,
@@ -369,11 +430,19 @@ def share_password(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if not has_permission(current_user.role, "password.share"):
-        raise HTTPException(status_code=403, detail="权限不足")
     entry = db.query(PasswordEntry).filter(PasswordEntry.id == password_id).first()
     if not entry:
         raise HTTPException(status_code=404, detail="密码不存在")
+    level = entry.security_level or "low"
+    if level == "personal":
+        raise HTTPException(status_code=403, detail="个人密码不允许分享")
+    if level == "high":
+        raise HTTPException(status_code=403, detail="高安全密码不允许分享")
+    if level == "medium" and current_user.role != Role.ADMIN:
+        raise HTTPException(status_code=403, detail="中安全密码仅Admin可分享，请发起审批")
+    if level == "low":
+        if not has_permission(current_user.role, "password.share"):
+            raise HTTPException(status_code=403, detail="权限不足")
     if current_user.role != Role.ADMIN and entry.created_by != current_user.id:
         raise HTTPException(status_code=403, detail="只能分享自己创建的密码")
     existing = db.query(PasswordShare).filter(

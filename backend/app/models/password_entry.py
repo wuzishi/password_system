@@ -18,6 +18,7 @@ class PasswordEntry(Base):
     port = Column(Integer, nullable=True)         # server port (e.g. 22)
     team_id = Column(Integer, ForeignKey("teams.id"), nullable=True)
     created_by = Column(Integer, ForeignKey("users.id"), nullable=False)
+    security_level = Column(String(20), default="low")  # personal/high/medium/low
     is_personal = Column(Boolean, default=False)
     expire_days = Column(Integer, default=0)      # 0=never, 90=3 months
     password_changed_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
