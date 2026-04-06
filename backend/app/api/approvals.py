@@ -95,9 +95,15 @@ def pending_count(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    if current_user.role != Role.ADMIN:
-        return {"count": 0}
-    count = db.query(ApprovalRequest).filter(ApprovalRequest.status == "pending").count()
+    if current_user.role == Role.ADMIN:
+        # Admin sees total pending count
+        count = db.query(ApprovalRequest).filter(ApprovalRequest.status == "pending").count()
+    else:
+        # Non-admin sees their own pending count
+        count = db.query(ApprovalRequest).filter(
+            ApprovalRequest.requester_id == current_user.id,
+            ApprovalRequest.status == "pending",
+        ).count()
     return {"count": count}
 
 

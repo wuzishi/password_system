@@ -138,6 +138,7 @@ async function loadPendingCount() {
 onMounted(() => {
   loadPendingCount()
   setInterval(loadPendingCount, 30000)
+  window.addEventListener('approval-changed', loadPendingCount)
 })
 
 const roleTag = computed(() => ROLES[auth.role] || { label: auth.role, type: 'info' })

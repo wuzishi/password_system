@@ -155,6 +155,7 @@ async function handleApprove(row) {
   await approveRequest(row.id)
   ElMessage.success('已批准')
   loadData()
+  window.dispatchEvent(new Event('approval-changed'))
 }
 
 function openReject(row) {
@@ -168,6 +169,7 @@ async function handleReject() {
   ElMessage.success('已拒绝')
   rejectVisible.value = false
   loadData()
+  window.dispatchEvent(new Event('approval-changed'))
 }
 
 onMounted(loadData)
