@@ -3,7 +3,7 @@ FROM node:20-slim AS builder
 
 WORKDIR /build
 COPY package.json package-lock.json ./
-RUN npm ci --production=false
+RUN npm config set registry https://registry.npmmirror.com && npm install
 
 COPY . .
 RUN npm run build

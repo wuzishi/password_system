@@ -2,8 +2,9 @@
 FROM python:3.12-slim AS builder
 
 WORKDIR /build
+ENV HTTP_PROXY="" HTTPS_PROXY="" http_proxy="" https_proxy=""
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+RUN pip install --no-cache-dir --prefix=/install -i https://pypi.tuna.tsinghua.edu.cn/simple -r requirements.txt
 
 # ---- 运行阶段 ----
 FROM python:3.12-slim
