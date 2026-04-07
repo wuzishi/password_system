@@ -36,7 +36,11 @@
             <el-input v-model="form.username" size="large" placeholder="设置登录用户名" />
           </el-form-item>
           <el-form-item label="密码" prop="password">
-            <el-input v-model="form.password" type="password" show-password size="large" placeholder="设置登录密码" />
+            <el-input v-model="form.password" type="password" show-password size="large" placeholder="设置登录密码">
+              <template #append>
+                <el-button @click="generatePassword">生成</el-button>
+              </template>
+            </el-input>
           </el-form-item>
           <el-form-item label="确认密码" prop="confirm">
             <el-input v-model="form.confirm" type="password" show-password size="large" placeholder="再次输入密码" />
@@ -72,19 +76,57 @@ const formRef = ref()
 
 const form = reactive({ username: '', password: '', confirm: '' })
 
+function generatePassword() {
+  const lower = 'abcdefghijklmnopqrstuvwxyz'
+  const upper = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  const digits = '0123456789'
+  const symbols = '!@#$%^&*()_+-=[]{};:,.<>?/|~'
+  const all = lower + upper + digits + symbols
+  const rand = (set) => set[Math.floor(Math.random() * set.length)]
+  // 保证四类各至少一位，总长 16
+  const chars = [rand(lower), rand(upper), rand(digits), rand(symbols)]
+  for (let i = 0; i < 12; i++) chars.push(rand(all))
+  // Fisher–Yates 洗牌
+  for (let i = chars.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[chars[i], chars[j]] = [chars[j], chars[i]]
+  }
+  const pwd = chars.join('')
+  form.password = pwd
+  form.confirm = pwd
+  // 复制到剪贴板，提醒用户保存
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(pwd).then(
+      () => ElMessage.success('已生成强密码并复制到剪贴板，请妥善保存'),
+      () => ElMessage.success('已生成强密码，请妥善保存'),
+    )
+  } else {
+    ElMessage.success('已生成强密码，请妥善保存')
+  }
+}
+
 const validateConfirm = (rule, value, callback) => {
   if (value !== form.password) callback(new Error('两次密码不一致'))
   else callback()
 }
 
+const validateStrongPassword = (rule, value, callback) => {
+  if (!value) return callback(new Error('请输入密码'))
+  if (value.length < 8) return callback(new Error('密码长度不能少于 8 位'))
+  if (!/[a-z]/.test(value)) return callback(new Error('密码必须包含小写字母'))
+  if (!/[A-Z]/.test(value)) return callback(new Error('密码必须包含大写字母'))
+  if (!/\d/.test(value)) return callback(new Error('密码必须包含数字'))
+  if (!/[!@#$%^&*()_+\-=\[\]{};:'",.<>?/\\|`~]/.test(value)) return callback(new Error('密码必须包含特殊字符'))
+  callback()
+}
+
 const rules = {
   username: [
     { required: true, message: '请输入用户名', trigger: 'blur' },
-    { min: 3, message: '至少3个字符', trigger: 'blur' },
+    { min: 2, max: 50, message: '用户名长度需在 2-50 字符之间', trigger: 'blur' },
   ],
   password: [
-    { required: true, message: '请输入密码', trigger: 'blur' },
-    { min: 6, message: '至少6位', trigger: 'blur' },
+    { required: true, validator: validateStrongPassword, trigger: 'blur' },
   ],
   confirm: [
     { required: true, message: '请确认密码', trigger: 'blur' },
@@ -131,7 +173,12 @@ async function handleSubmit() {
     ElMessage.success('账号创建成功，欢迎加入！')
     router.push('/dashboard')
   } catch (err) {
-    // error handled by interceptor
+    const detail = err.response?.data?.detail
+    if (Array.isArray(detail)) {
+      ElMessage.error(detail.map(d => d.msg).join('; '))
+    } else if (typeof detail === 'string') {
+      ElMessage.error(detail)
+    }
   } finally {
     submitting.value = false
   }
